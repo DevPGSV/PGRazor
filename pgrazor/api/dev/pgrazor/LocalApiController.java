@@ -24,6 +24,8 @@ final class LocalApiController {
     }
 
     private final Store store;
+    private final LocalApiData data;
+    private final LocalApiExtension extension;
     private final Object stateLock = new Object();
     private volatile long generation;
     private LocalApiServer active;
@@ -31,7 +33,17 @@ final class LocalApiController {
     private Future<?> retiring;
 
     LocalApiController(Store store) {
+        this(store, new LocalApiData(() -> System.nanoTime() / 1_000_000L, System::currentTimeMillis));
+    }
+
+    LocalApiController(Store store, LocalApiData data) {
+        this(store, data, null);
+    }
+
+    LocalApiController(Store store, LocalApiData data, LocalApiExtension extension) {
         this.store = store;
+        this.data = data;
+        this.extension = extension;
     }
 
     synchronized Settings settings() throws IOException {
@@ -84,12 +96,14 @@ final class LocalApiController {
         if (previous != null) previous.awaitUninterruptibly();
         if (generation != epoch) throw new IOException("Local API start was cancelled");
         LocalApiServer bound = LocalApiServer.start(settings.config.socketAddress(), settings.token,
-            LocalApiRoutes.production(), () -> generation == epoch);
+            LocalApiRoutes.production(data), () -> generation == epoch, extension);
         synchronized (stateLock) {
             if (generation == epoch) {
                 retiring = null;
                 active = bound;
                 this.bound = settings.config;
+                data.enable();
+                if (extension != null) extension.listenerChanged(true);
                 return;
             }
         }
@@ -124,6 +138,8 @@ final class LocalApiController {
 
     private void invalidateLocked() {
         generation++;
+        if (extension != null) extension.listenerChanged(false);
+        data.disable();
         if (active != null) {
             retiring = active.stopAsync();
             active = null;

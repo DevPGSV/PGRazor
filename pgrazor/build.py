@@ -19,10 +19,12 @@ def source_fingerprints(root):
              root/'VERSION', root/'AndroidManifest.xml']
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
 
-def api_fingerprints(root, preview=False):
+def api_fingerprints(root, preview=False, research_api=False):
     paths = [*sorted((root/'src').rglob('*.java')), *sorted((root/'api').rglob('*.java')),
              root/'VERSION', root/'AndroidManifest.xml', root/'vendor/netty/artifacts.json',
              *sorted((root/'vendor/netty').rglob('*.md'))]
+    if research_api:
+        paths.extend(sorted((root/'research-api').rglob('*.java')))
     if preview:
         paths.extend(sorted((root/'preview').rglob('*.java')))
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
@@ -118,7 +120,10 @@ def main():
     mode.add_argument('--test-only', action='store_true', help='Test coordinates and native ABI validation without the Android SDK')
     mode.add_argument('--nonroot', action='store_true', help='Compile the non-root game DEX with its offline API dependencies')
     mode.add_argument('--controls-only', action='store_true', help='Compile the embedded game DEX without preview dependencies or signing')
+    parser.add_argument('--research-api', action='store_true', help='Include optional Research API in the non-root DEX')
     args = parser.parse_args()
+    if args.research_api and not args.nonroot:
+        parser.error('--research-api requires --nonroot')
     for folder in ['tests','input']:
         (BUILD / folder).mkdir(parents=True,exist_ok=True)
     (ROOT / 'input').mkdir(exist_ok=True)
@@ -146,24 +151,41 @@ def main():
     if args.controls_only:
         return
     jars = http_dependencies.dependencies()
-    classes, jar = compile_controls('api', jars)
+    classes, jar = compile_controls('api', jars, args.research_api)
     dex = compile_dex(classes/'nonroot-dex', jar, *jars)
-    record_dex(dex, 'pgrazor-nonroot', 'nonroot-build-state', api_fingerprints(ROOT))
+    name = 'nonroot-research-api' if args.research_api else 'nonroot'
+    record_dex(dex, 'pgrazor-' + name, name + '-build-state',
+               api_fingerprints(ROOT, research_api=args.research_api), args.research_api)
+    if args.research_api:
+        classpath = os.pathsep.join(map(str, [ANDROID, classes, *jars]))
+        run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
+            '-classpath', classpath, '-d', BUILD/'tests',
+            *[ROOT/'test'/name for name in ('HttpPreviewServerTest.java', 'LocalApiWebSocketTest.java', 'ResearchApiTest.java')])
+        run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.ResearchApiTest')
     if not args.nonroot:
         build_preview(classes, jar, jars)
 
-def record_dex(dex, filename, receipt, sources):
+def record_dex(dex, filename, receipt, sources, research_api=False):
     shutil.copyfile(dex, BUILD/(filename+'.dex'))
-    state = {'version':release_version(ROOT), 'sources':sources,
+    state = {'version':release_version(ROOT), 'sources':sources, 'research_api':research_api,
              'dex_sha256':hashlib.sha256(dex.read_bytes()).hexdigest()}
     (BUILD/(receipt+'.json')).write_text(json.dumps(state, indent=2), encoding='utf-8')
 
-def compile_controls(variant, jars):
+def compile_controls(variant, jars, research_api=False):
     classes = BUILD/('compile-'+uuid.uuid4().hex[:12])
     classes.mkdir()
     version_source = classes/'BuildVersion.java'
     version_source.write_text('package dev.pgrazor; final class BuildVersion { static final String NAME = "' + release_version(ROOT) + '"; }\n', encoding='utf-8')
     sources = sorted((ROOT/'src').rglob('*.java')) + sorted((ROOT/variant).rglob('*.java'))
+    if variant == 'api':
+        factory = classes/'LocalApiExtensionFactory.java'
+        implementation = 'new ResearchApi(epoch)' if research_api else 'null'
+        factory.write_text('package dev.pgrazor; final class LocalApiExtensionFactory {'
+                           'static LocalApiExtension create(java.util.function.LongSupplier epoch) {'
+                           f'return {implementation};' + '}}', encoding='utf-8')
+        sources.append(factory)
+        if research_api:
+            sources.extend(sorted((ROOT/'research-api').rglob('*.java')))
     run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
         '-classpath', os.pathsep.join(map(str, [ANDROID, *jars])), '-d', classes, version_source, *sources)
     if not (classes/'dev/pgrazor/BootstrapProvider.class').is_file():
@@ -184,8 +206,8 @@ def build_preview(classes, controls_jar, jars):
         '-classpath', str(ANDROID)+os.pathsep+classpath, '-d', preview_classes, *preview_sources)
     run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
         '-classpath', classpath, '-d', BUILD/'tests',
-        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java')
-    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest'):
+        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java', ROOT/'test/LocalApiTrainerTest.java', ROOT/'test/LocalApiWebSocketTest.java')
+    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest', 'LocalApiTrainerTest', 'LocalApiWebSocketTest'):
         run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.'+test)
     preview_jar = classes/'preview.jar'
     class_jar(preview_jar, preview_classes)

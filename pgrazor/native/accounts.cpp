@@ -1,4 +1,5 @@
 #include "accounts.h"
+#include "session_stats.h"
 #include "hook_engine.h"
 #include "runtime_transport.h"
 #include <cstdio>
@@ -952,6 +953,7 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
     return;
   }
 
+  uint64_t trainer_observed = 0;
   {
     const uint64_t publish_bt = clock_boottime_ms();
     std::lock_guard<std::mutex> lock(g_state.policy_mu);
@@ -973,10 +975,16 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
       std::memcpy(g_state.snap_id, id_buf, static_cast<size_t>(id_len) * sizeof(uint16_t));
       std::memcpy(g_state.snap_name, name_buf, static_cast<size_t>(name_len) * sizeof(uint16_t));
       g_state.snap_last_identity_ms = publish_bt;
+      trainer_observed = publish_bt;
       push_event_locked(PGR_ACC_EVT_IDENTITY, PGR_ACC_REASON_NONE, true, false,
                         id_buf, id_len, name_buf, name_len);
     }
   }
+#ifdef __ANDROID__
+  if (trainer_observed && pgr_local_api_trainer_requested()) pgr_local_api_trainer(player_root.target(), id_buf, id_len, name_buf, name_len, trainer_observed);
+#else
+  (void) trainer_observed;
+#endif
 }
 
 bool api_clear_impl() noexcept {

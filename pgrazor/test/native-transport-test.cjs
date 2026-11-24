@@ -58,7 +58,7 @@ function fixture(){
 const f=fixture(),{control}=f.bridge;
 for(const group of ['BOOL_READERS','INT_READERS','DOUBLE_READERS','STRING_READERS','PULSE_READERS','ACTIONS']){
  const current=javaArray(group);
- if(group==='BOOL_READERS'){assert.equal(current.pop(),'gymRepeatEnabled','v20 native-only gym repeat setting');assert.equal(current.pop(),'eventBoxesAllowed','v2 native-only collector gate');}
+ if(group==='BOOL_READERS'){assert.equal(current.pop(),'localApiTrainerRequested','v24 production-only trainer demand');assert.equal(current.pop(),'gymRepeatEnabled','v20 native-only gym repeat setting');assert.equal(current.pop(),'eventBoxesAllowed','v2 native-only collector gate');}
  if(group==='ACTIONS')assert.equal(current.pop(),'setShinyTarget:boolean,double,double:void','v21 native-only shiny marker action');
  assert.deepEqual(Array.from(f.schema[group]),current,group+' stable research adapter wire order');
 }

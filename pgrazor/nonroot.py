@@ -50,18 +50,23 @@ def cleanup_generated_builds():
     except (OSError,subprocess.SubprocessError) as error:
         print('WARNING: APK packaging succeeded, but automatic cleanup did not finish: '+str(error),file=sys.stderr,flush=True)
 
-def validated_build(*, api=False):
-    receipt=ROOT/'build'/('nonroot-build-state.json' if api else 'build-state.json')
+def validated_build(*, api=False, research_api=False):
+    variant = 'nonroot-research-api' if research_api else 'nonroot'
+    receipt=ROOT/'build'/(variant+'-build-state.json' if api else 'build-state.json')
     if not receipt.is_file(): raise RuntimeError('Build receipt missing. Run without --skip-build to compile the current source.')
     state=json.loads(receipt.read_text(encoding='utf-8'))
-    actual=build.api_fingerprints(ROOT) if api else build.source_fingerprints(ROOT)
+    actual=build.api_fingerprints(ROOT, research_api=research_api) if api else build.source_fingerprints(ROOT)
     if state.get('sources')!=actual: raise RuntimeError('Built classes are stale. Run without --skip-build.')
     if state.get('version')!=build.release_version(ROOT): raise RuntimeError('Built version is stale. Run without --skip-build.')
-    dex=ROOT/'build'/('pgrazor-nonroot.dex' if api else 'pgrazor.dex')
+    if api and state.get('research_api') is not research_api:
+        raise RuntimeError('Built DEX feature mismatch. Rebuild the requested variant.')
+    dex=ROOT/'build'/('pgrazor-'+variant+'.dex' if api else 'pgrazor.dex')
     if not dex.is_file() or runtime_assets.sha256(dex)!=state.get('dex_sha256'): raise RuntimeError('Built DEX checksum mismatch')
     data=dex.read_bytes()
     if not data.startswith(b'dex\n') or b'Ldev/pgrazor/BootstrapProvider;' not in data:
         raise RuntimeError('DEX does not contain the embedded bootstrap')
+    if api and (b'Ldev/pgrazor/ResearchApi;' in data) != research_api:
+        raise RuntimeError('Built DEX Research API class mismatch')
     return dex
 
 def input_apks(source,work):
@@ -176,13 +181,15 @@ def assert_no_research_payload(names):
             raise RuntimeError('Compiled production build must not ship Frida bridge assets: '+name)
 
 
-def package(source, *,research_runtime=False,panel_only=False,download=False,preview=False,probe_abi=None,game_runtime_abi='auto',il2cpp_survey=False,camera_probe=False,camera_sample=False,camera_steering=False,scene_probe=False,scene_observe=False,interaction_probe=False,quick_summary=False,quick_ball=False,quick_close=False,google_browser_login=False):
+def package(source, *,research_api=False,research_runtime=False,panel_only=False,download=False,preview=False,probe_abi=None,game_runtime_abi='auto',il2cpp_survey=False,camera_probe=False,camera_sample=False,camera_steering=False,scene_probe=False,scene_observe=False,interaction_probe=False,quick_summary=False,quick_ball=False,quick_close=False,google_browser_login=False):
     if quick_summary: raise ValueError('--quick-summary is retired; production gameplay is compiled by default')
     if research_runtime and panel_only: raise ValueError('--research-runtime cannot be combined with --panel-only')
     if preview and not (research_runtime or panel_only): raise ValueError('Preview requires --research-runtime or --panel-only')
     if research_runtime and (quick_close or quick_ball): raise ValueError('Research runtime does not support retired quick gameplay scripts')
     if panel_only and (quick_close or quick_ball): raise ValueError('Quick gameplay requires compiled production')
     compiled_gameplay = not research_runtime and not panel_only
+    if research_api and not compiled_gameplay:
+        raise ValueError('--research-api requires the compiled gameplay build')
     if compiled_gameplay:
         if il2cpp_survey or scene_probe or scene_observe or camera_sample or (camera_probe and not camera_steering):
             raise ValueError('Compiled gameplay does not support research survey, scene or passive camera diagnostics; use --research-runtime')
@@ -202,7 +209,7 @@ def package(source, *,research_runtime=False,panel_only=False,download=False,pre
     validate_survey_options(camera_probe,panel_only,probe_abi if preview else game_runtime_abi,'--camera-probe')
     validate_survey_options(scene_probe,panel_only,probe_abi if preview else game_runtime_abi,'--scene-probe')
     validate_survey_options(interaction_probe,panel_only,probe_abi if preview else game_runtime_abi,'--interaction-probe')
-    dex=validated_build(api=True) if compiled_gameplay else None if preview else validated_build()
+    dex=validated_build(api=True, research_api=research_api) if compiled_gameplay else None if preview else validated_build()
     folder=ROOT/'build/nonroot'/(dt.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]); folder.mkdir(parents=True)
     inputs=input_apks(source,folder)
     package_name,base,rows,native_abis=inspect_set(inputs)
@@ -323,7 +330,7 @@ def package(source, *,research_runtime=False,panel_only=False,download=False,pre
     if compiled_gameplay:
         assets.update(build.netty_notices())
         assert_no_research_payload(assets)
-    report={'input':str(source.resolve()),'input_sha256':runtime_assets.sha256(source),'package':package_name,
+    report={'features':{'production_api':compiled_gameplay,'websocket':compiled_gameplay,'research_api':research_api},'input':str(source.resolve()),'input_sha256':runtime_assets.sha256(source),'package':package_name,
         'mode':'compiled-gameplay' if compiled_gameplay else ('panel-only' if panel_only else 'research-runtime'),'original_abis':sorted(native_abis),'runtime_abi':game_runtime_abi if not preview else probe_abi,'runtime_abis':abis,
         'game_acceptance':'UNTESTED','local_http_api':compiled_gameplay,'runtime':runtimes,'outputs':[], 'input_certificate_sha256':certificates[0],
         'installation':'Not installed. Signed with local development key; cannot update a differently signed installation.'}
@@ -426,6 +433,7 @@ def main(argv=None):
     parser.add_argument('--abi',choices=sorted(runtime_assets.ARCHES),help='Required with --build-probe: architecture of the intended phone')
     parser.add_argument('--runtime-abi',choices=['auto',*sorted(runtime_assets.ARCHES)],help='With --apk, defaults to auto: bundle ARM64 and x86-64 runtimes and select the native process ABI at startup. Native gameplay hooks require ARM64.')
     parser.add_argument('--serial',help='With --probe, target this adb device serial; defaults to the only connected device')
+    parser.add_argument('--research-api',action='store_true',help='Include the optional authenticated Research API')
     parser.add_argument('--research-runtime',action='store_true',help='Explicitly enable the research-only Gadget and diagnostic script runtime')
     parser.add_argument('--panel-only',action='store_true',help='Test embedded menu and logs without Gadget or location overrides')
     diagnostic=parser.add_mutually_exclusive_group()
@@ -443,6 +451,8 @@ def main(argv=None):
     parser.add_argument('--skip-build',action='store_true',help='Use compiled module only if source/checksums still match')
     parser.add_argument('--seconds',type=float,default=0,help='Stop probe desktop logging after this many seconds; 0 waits for Ctrl+C')
     args=parser.parse_args(argv)
+    if args.research_api and (args.research_runtime or args.panel_only or args.probe or args.build_probe):
+        parser.error('--research-api requires the compiled gameplay build')
     if args.research_runtime and args.panel_only: parser.error('--research-runtime cannot be combined with --panel-only')
     if (args.probe or args.build_probe) and not (args.research_runtime or args.panel_only): parser.error('Preview requires --research-runtime or --panel-only')
     if args.research_runtime and (args.quick_close or args.quick_ball): parser.error('Research runtime does not support retired quick gameplay scripts')
@@ -481,9 +491,10 @@ def main(argv=None):
     preview=args.probe or args.build_probe
     if not args.skip_build:
         command(sys.executable, ROOT/'build.py',
-                *([] if preview else ['--controls-only' if args.research_runtime or args.panel_only else '--nonroot']))
+                *([] if preview else ['--controls-only' if args.research_runtime or args.panel_only else '--nonroot']), *(['--research-api'] if args.research_api else []))
     source=ROOT/'build/pgrazor-preview.apk' if preview else args.apk.resolve()
     options={'game_runtime_abi':args.runtime_abi} if args.runtime_abi else {}
+    if args.research_api: options['research_api']=True
     if args.research_runtime: options['research_runtime']=True
     if args.il2cpp_survey: options['il2cpp_survey']=True
     if args.camera_probe: options['camera_probe']=True

@@ -46,16 +46,22 @@ final class LocalApiServer implements AutoCloseable {
     private final EventLoopGroup loops = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final ChannelGroup clients = new DefaultChannelGroup(loops.next(), true);
     private final Channel listener;
+    private final LocalApiWebSocket.Limits webSockets = new LocalApiWebSocket.Limits();
     private boolean closed;
 
     static LocalApiServer start(InetSocketAddress address, String token, LocalApiRoutes routes, BooleanSupplier valid) throws IOException {
+        return start(address, token, routes, valid, null);
+    }
+
+    static LocalApiServer start(InetSocketAddress address, String token, LocalApiRoutes routes,
+            BooleanSupplier valid, LocalApiExtension extension) throws IOException {
         if (!(address.getAddress() instanceof Inet4Address) || token.isEmpty()) {
             throw new IllegalArgumentException("IPv4 and a bearer token are required");
         }
-        return new LocalApiServer(address, ("Bearer " + token).getBytes(StandardCharsets.US_ASCII), routes, valid);
+        return new LocalApiServer(address, ("Bearer " + token).getBytes(StandardCharsets.US_ASCII), routes, valid, extension);
     }
 
-    private LocalApiServer(InetSocketAddress address, byte[] authorization, LocalApiRoutes routes, BooleanSupplier valid) throws IOException {
+    private LocalApiServer(InetSocketAddress address, byte[] authorization, LocalApiRoutes routes, BooleanSupplier valid, LocalApiExtension extension) throws IOException {
         try {
             ChannelFuture bound = new ServerBootstrap()
                 .group(loops)
@@ -75,7 +81,7 @@ final class LocalApiServer implements AutoCloseable {
                         channel.pipeline().addLast(new HttpServerCodec(new HttpDecoderConfig()
                             .setMaxInitialLineLength(2048).setMaxHeaderSize(8192)
                             .setMaxChunkSize(1024).setStrictLineParsing(true).setChunkedSupported(false)));
-                        channel.pipeline().addLast(new StatusHandler(authorization, routes, valid));
+                        channel.pipeline().addLast(new StatusHandler(authorization, routes, valid, timeout, webSockets, extension));
                     }
                 })
                 .bind(address).awaitUninterruptibly();
@@ -115,12 +121,19 @@ final class LocalApiServer implements AutoCloseable {
         private final byte[] authorization;
         private final LocalApiRoutes routes;
         private final BooleanSupplier valid;
+        private final ScheduledFuture<?> timeout;
+        private final LocalApiWebSocket.Limits webSockets;
+        private final LocalApiExtension extension;
         private boolean handled;
 
-        StatusHandler(byte[] authorization, LocalApiRoutes routes, BooleanSupplier valid) {
+        StatusHandler(byte[] authorization, LocalApiRoutes routes, BooleanSupplier valid,
+                ScheduledFuture<?> timeout, LocalApiWebSocket.Limits webSockets, LocalApiExtension extension) {
             this.authorization = authorization;
             this.routes = routes;
             this.valid = valid;
+            this.timeout = timeout;
+            this.webSockets = webSockets;
+            this.extension = extension;
         }
 
         @Override protected void channelRead0(ChannelHandlerContext ctx, HttpRequest request) {
@@ -143,22 +156,59 @@ final class LocalApiServer implements AutoCloseable {
                     || !validHost(ctx, request.headers().getAll(HttpHeaderNames.HOST))) {
                 status = HttpResponseStatus.FORBIDDEN;
                 body = "{\"error\":\"FORBIDDEN\"}";
-            } else if (!authorized(request.headers().getAll(HttpHeaderNames.AUTHORIZATION))) {
-                status = HttpResponseStatus.UNAUTHORIZED;
-                body = "{\"error\":\"UNAUTHORIZED\"}";
-            } else if (!HttpMethod.GET.equals(request.method())) {
-                status = HttpResponseStatus.METHOD_NOT_ALLOWED;
-                body = "{\"error\":\"METHOD_NOT_ALLOWED\"}";
             } else {
-                LocalApiRoutes.Reply reply = routes.get(request.uri());
-                status = HttpResponseStatus.valueOf(reply.code);
-                body = reply.body;
+                handleAuthenticated(ctx, request);
+                return;
             }
+            send(ctx, null, status, body, null);
+        }
 
-            if (!valid.getAsBoolean()) {
+        private void handleAuthenticated(ChannelHandlerContext ctx, HttpRequest request) {
+            String uri = request.uri();
+            List<String> credentials = request.headers().getAll(HttpHeaderNames.AUTHORIZATION);
+            boolean optional = extension != null && extension.owns(uri);
+            LocalApiExtension.Access access = optional ? extension.authenticate(credentials) : null;
+            if (optional ? access == null : !authorized(credentials)) {
+                send(ctx, null, HttpResponseStatus.UNAUTHORIZED, "{\"error\":\"UNAUTHORIZED\"}", null);
+                return;
+            }
+            if (!HttpMethod.GET.equals(request.method())) {
+                send(ctx, null, HttpResponseStatus.METHOD_NOT_ALLOWED, "{\"error\":\"METHOD_NOT_ALLOWED\"}", access);
+                return;
+            }
+            LocalApiWebSocket.Feed feed = optional ? access.events(uri)
+                : LocalApiRoutes.EVENTS_PATH.equals(uri) ? routes.events : null;
+            if (feed != null) {
+                BooleanSupplier lease = () -> valid.getAsBoolean() && (access == null || access.valid());
+                if (!lease.getAsBoolean()) {
+                    ctx.close();
+                    return;
+                }
+                HttpResponseStatus status = webSockets.upgrade(ctx, request, timeout, lease, feed);
+                if (status != null) send(ctx, null, status, "{\"error\":\"WEBSOCKET_UPGRADE_REJECTED\"}", access);
+                return;
+            }
+            LocalApiRoutes.Reply reply = optional ? access.get(uri) : routes.get(uri);
+            send(ctx, reply, HttpResponseStatus.valueOf(reply.code), reply.body, access);
+        }
+
+        private void send(ChannelHandlerContext ctx, LocalApiRoutes.Reply reply, HttpResponseStatus status,
+                String body, LocalApiExtension.Access access) {
+            if (!valid.getAsBoolean() || (access != null && !access.valid())) {
                 ctx.close();
                 return;
             }
+            FullHttpResponse response = response(status, body);
+            if (!routes.publish(reply, () -> ctx.write(response).addListener(ChannelFutureListener.CLOSE))) {
+                response.release();
+                LocalApiRoutes.Reply expired = LocalApiRoutes.sessionChanged();
+                ctx.write(response(HttpResponseStatus.valueOf(expired.code), expired.body))
+                    .addListener(ChannelFutureListener.CLOSE);
+            }
+            ctx.flush();
+        }
+
+        private static FullHttpResponse response(HttpResponseStatus status, String body) {
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status,
                 Unpooled.wrappedBuffer(bytes));
@@ -172,7 +222,11 @@ final class LocalApiServer implements AutoCloseable {
             if (status.equals(HttpResponseStatus.METHOD_NOT_ALLOWED)) {
                 response.headers().set(HttpHeaderNames.ALLOW, "GET");
             }
-            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+            if (status.equals(HttpResponseStatus.UPGRADE_REQUIRED)) {
+                response.headers().set(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
+                    .set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+            }
+            return response;
         }
 
         private boolean authorized(List<String> headers) {

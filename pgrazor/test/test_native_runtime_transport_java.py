@@ -22,6 +22,7 @@ def control_shell():
     specs.append(('setShinyTarget', 'boolean,double,double', 'void'))  # native-only action 59
     specs.append(('eventBoxesAllowed', '', 'boolean'))
     specs.append(('gymRepeatEnabled', '', 'boolean'))
+    specs.append(('localApiTrainerRequested', '', 'boolean'))
     specs.append(('smartCatchConfig', '', 'String'))
     specs.append(('gymAutomationConfig', '', 'String'))
     specs.append(('buddyEmotionConfig', '', 'String'))

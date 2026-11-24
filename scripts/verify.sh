@@ -52,6 +52,8 @@ docker compose -f compose.yaml -f - run --rm --no-deps -T --pull never \
         python -B - "$1" <<'\''PY'\''
 import hashlib
 import json
+import re
+import zipfile
 import subprocess
 import sys
 from pathlib import Path
@@ -65,6 +67,21 @@ if info.get("apk_sha256") != digest:
     raise SystemExit("APK hash does not match build-info.json")
 if "signing_certificate_sha256" in info and info["signing_certificate_sha256"] != sys.argv[1]:
     raise SystemExit("Certificate does not match build-info.json")
+features = info.get("features")
+if features:
+    if json.loads(Path("report.json").read_text(encoding="utf-8")).get("features") != features:
+        raise SystemExit("APK feature receipts disagree")
+    if features.get("production_api") is not True or features.get("websocket") is not True:
+        raise SystemExit("Missing production API feature")
+    with zipfile.ZipFile("PGRazor.apk") as archive:
+        dexes = [archive.read(name) for name in archive.namelist() if re.fullmatch(r"classes[0-9]*\.dex", name)]
+    descriptors = ("ResearchApi", "ResearchApiSession", "ResearchApiSettings")
+    if not isinstance(features.get("research_api"), bool) or any(
+        any(("Ldev/pgrazor/" + name + ";").encode() in dex for dex in dexes) != features["research_api"]
+        for name in descriptors
+    ):
+        raise SystemExit("APK Research API classes disagree with feature receipt")
+    print("Features:", json.dumps(features, sort_keys=True))
 version, code = info["game_version"], info["game_version_code"]
 badging = subprocess.check_output(["aapt", "dump", "badging", "PGRazor.apk"], text=True)
 expected = f"package: name=\x27com.nianticlabs.pokemongo\x27 versionCode=\x27{code}\x27 versionName=\x27{version}\x27"

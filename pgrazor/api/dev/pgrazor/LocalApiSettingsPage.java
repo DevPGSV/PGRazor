@@ -48,6 +48,7 @@ final class LocalApiSettingsPage {
     private final TextView token;
     private final TextView addressNote;
     private final LinearLayout urls;
+    private final LocalApiExtension.Page extensionPage;
     private final Runnable tick = this::refresh;
     private final ConnectivityManager.NetworkCallback network = new ConnectivityManager.NetworkCallback() {
         @Override public void onAvailable(Network value) { addressDirty = true; }
@@ -119,6 +120,8 @@ final class LocalApiSettingsPage {
         urls = new LinearLayout(activity);
         urls.setOrientation(LinearLayout.VERTICAL);
         addresses.addView(urls);
+        LocalApiExtension extension = LocalApiRuntime.extension();
+        extensionPage = extension == null ? null : extension.mount(activity, addresses);
         TextWatcher changes = new TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) {}
@@ -140,6 +143,7 @@ final class LocalApiSettingsPage {
             if (confirmation != null) confirmation.dismiss();
             confirmation = null;
             resetNetwork();
+            if (extensionPage != null) extensionPage.hidden();
             revealed = false;
             paintToken();
             displayed = null;
@@ -153,6 +157,7 @@ final class LocalApiSettingsPage {
         if (!visible) return;
         paint();
         updateAddresses();
+        if (extensionPage != null) extensionPage.refresh(candidates);
         ui.postDelayed(tick, 250);
     }
 
@@ -337,6 +342,10 @@ final class LocalApiSettingsPage {
     }
 
     private void copy(String label, String value, boolean sensitive) {
+        copy(activity, label, value, sensitive);
+    }
+
+    static void copy(Activity activity, String label, String value, boolean sensitive) {
         ClipboardManager clipboard = activity.getSystemService(ClipboardManager.class);
         try {
             if (clipboard == null) throw new IllegalStateException();

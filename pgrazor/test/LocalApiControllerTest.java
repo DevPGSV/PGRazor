@@ -34,7 +34,7 @@ public final class LocalApiControllerTest {
             check(controller.isRunning());
             String body = request(port, initial, "/api/v1/status");
             check(body.startsWith("HTTP/1.1 200 ") && body.contains("\"account_ready\":false")
-                && body.contains("\"events\":{\"supported\":false") && !body.contains("synthetic"));
+                && body.contains("\"events\":{\"supported\":true") && !body.contains("synthetic"));
             check(request(port, initial, "/api/v1/pokemon/123").startsWith("HTTP/1.1 501 "));
             check(request(port, initial, "/other").startsWith("HTTP/1.1 404 "));
             store.fail = true;

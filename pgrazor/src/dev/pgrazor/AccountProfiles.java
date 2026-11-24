@@ -92,12 +92,14 @@ final class AccountProfiles {
         for(SharedPreferences prefs:openPreferences)if(!prefs.edit().commit())throw new IOException("Preferences save did not finish");
     }
     static void support(boolean value){
+        if (!value) LocalApiRuntime.identityLost();
         boolean changed=!supportKnown||available!=value;supportKnown=true;
         available=value;if(!value)message="Account switching could not start this session. Restart the game to try again; other features are not affected.";
         if(changed)diag("account-support",value?"switching supported":"switching unavailable this session; other features continue on the startup profile");
     }
     static void identity(String id,String trainer) {
         if(id==null||id.isEmpty()||id.length()>256||trainer==null||trainer.isEmpty()||trainer.length()>128)return;
+        LocalApiRuntime.accountObserved(id, matchesAutomationIdentity(id));
         main.post(()->{
             if(store==null){if(!storageMissingNoted){storageMissingNoted=true;diag("account-storage","identity ignored: storage unavailable");}return;}
             if(switching||restarting||deleting||id.equals(observed))return;
@@ -116,7 +118,7 @@ final class AccountProfiles {
                     final AccountProfileStore.Profile actual=found;
                     main.post(()->{
                         if(epoch!=generation)return;
-                        if(actual.id.equals(startupId)){verified=true;message=actual.label;diag("account-state","active account verified");return;}
+                        if(actual.id.equals(startupId)){verified=true;if(matchesAutomationIdentity(id))LocalApiRuntime.accountObserved(id,true);message=actual.label;diag("account-state","active account verified");return;}
                         LocalApiRuntime.invalidate();
                         switching=true;message="Restoring " + actual.label;diag("account-state",created?"new account profile created; restarting with default settings":"restoring a saved account");
                         try{Control.quiesceAccounts();}catch(IOException error){fail("Could not save outgoing location. Reopen the game.");return;}
@@ -125,7 +127,7 @@ final class AccountProfiles {
                             catch(Exception error){main.post(()->fail("Could not restore account. Reopen the game."));}
                         });
                     });
-                }catch(Exception error){main.post(()->{observed="";verified=false;message="Could not save this account. Automation is paused.";diag("account-state","identity save failed; automation paused");});}
+                }catch(Exception error){main.post(()->{observed="";verified=false;LocalApiRuntime.identityLost();message="Could not save this account. Automation is paused.";diag("account-state","identity save failed; automation paused");});}
             });
         });
     }
@@ -197,7 +199,7 @@ final class AccountProfiles {
             catch(Exception error){main.post(()->{deleting=false;message="Could not finish deleting the account. Please retry.";diag("account-command","account delete failed");});}
         });
     }
-    private static void fail(String value){verified=false;message=value;diag("account-state","blocked: "+value);}
+    private static void fail(String value){verified=false;LocalApiRuntime.identityLost();message=value;diag("account-state","blocked: "+value);}
     private static void restart() {
         restart(false);
     }

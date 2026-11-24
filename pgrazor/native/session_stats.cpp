@@ -1,4 +1,5 @@
 #include "session_stats.h"
+#include "accounts.h"
 #include "shared_metadata.h"
 #include "runtime_bootstrap.h"
 #include "runtime_transport.h"
@@ -8,6 +9,8 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <cmath>
+#include <mutex>
 #include <string>
 
 // Session stats: the app keeps a rolling history of the player's lifetime counters to show what changed
@@ -22,6 +25,7 @@ template<class F>F fn(void *p){require(p,"missing runtime export");return reinte
 PgrBootBinding boot{};const PgrSharedMetadataOutput *md=nullptr;
 uint64_t owner=0,next_sample=0,services_at=0,sent_at=0;bool busy=false,ready=false;
 std::string sent;
+std::mutex stats_mutex;
 // A reading every 10 s is two managed calls and a few field reads. The service lookup, which searches the
 // scene, runs once a minute, and an unchanged reading is sent once a minute.
 constexpr uint64_t kSampleMs=10000,kServicesMs=60000,kResendMs=60000,kRetryMs=15000;
@@ -67,6 +71,15 @@ void event(const std::string &json){
  auto tr=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));if(!tr)return;
  PgrRuntimeTransportString strings[]={{"session-stats",13},{json.c_str(),uint32_t(json.size())}};tr->emit(19,nullptr,0,strings,2);
 }
+struct Stats { long long xp; int caught, seen, stops, hatched; float km; };
+Stats read_stats(void *stats) {
+ return {field<int64_t>(stats,"Experience","System.Int64"),
+         field<int32_t>(stats,"NumPokemonCaptured","System.Int32"),
+         field<int32_t>(stats,"NumPokemonEncountered","System.Int32"),
+         field<int32_t>(stats,"PokeStopVisits","System.Int32"),
+         field<int32_t>(stats,"NumEggsHatched","System.Int32"),
+         field<float>(stats,"KmWalked","System.Single")};
+}
 Root player,iap;  // cached game services
 void step(){
  if(!ready){auto api=static_cast<const PgrBootApi*>(pgrazor_runtime_bootstrap_api(1));boot.version=1;boot.size=sizeof(boot);require(md&&api&&api->snapshot(&boot)==0,"Runtime unavailable");ready=true;}
@@ -79,12 +92,10 @@ void step(){
  if(!player)return;
  Root stats(call(player.get(),"get_PlayerStats"));if(!stats)return;  // not loaded yet after sign-in
  require(class_name(stats.get())=="PlayerStatsProto","Player stats identity");
- const long long xp=field<int64_t>(stats.get(),"Experience","System.Int64");
- const int caught=field<int32_t>(stats.get(),"NumPokemonCaptured","System.Int32");
- const int seen=field<int32_t>(stats.get(),"NumPokemonEncountered","System.Int32");
- const int stops=field<int32_t>(stats.get(),"PokeStopVisits","System.Int32");
- const float km=field<float>(stats.get(),"KmWalked","System.Single");
- const int hatched=field<int32_t>(stats.get(),"NumEggsHatched","System.Int32");
+ const auto values=read_stats(stats.get());
+ const auto xp=values.xp;
+ const auto caught=values.caught, seen=values.seen, stops=values.stops, hatched=values.hatched;
+ const auto km=values.km;
  if(xp<=0)return;  // an empty proto before the player's data arrives
  // The stardust balance the game's own screens show; -1 when it cannot be read.
  long long dust=-1;
@@ -103,10 +114,66 @@ void step(){
 }  // namespace
 
 void pgr_session_stats_tick(uint64_t tid,const PgrSharedMetadataOutput *metadata){
+ std::unique_lock<std::mutex> guard_lock(stats_mutex,std::try_to_lock);
+ if(!guard_lock)return;
  if(busy||!tid||tid!=uint64_t(gettid())||(owner&&owner!=tid)||!metadata)return;
  struct Guard{Guard(){busy=true;}~Guard(){busy=false;}}guard;
  owner=tid;md=metadata;
  try{step();}
  catch(const Failure &f){next_sample=clock_ms()+kServicesMs;player.reset();iap.reset();event(std::string("{\"error\":\"")+f.where+"\"}");}
  catch(...){next_sample=clock_ms()+kServicesMs;player.reset();iap.reset();}
+}
+
+bool pgr_local_api_trainer_requested() noexcept {
+ const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
+ int demand=0;
+ return transport&&!transport->get_bool(41,&demand)&&demand;
+}
+
+void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
+                           const uint16_t *name, uint16_t name_len, uint64_t observed_ms) noexcept {
+ try {
+  const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
+  int demand=0;
+  if(!transport||transport->get_bool(41,&demand)||!demand||!current||!id_len||!name_len
+      ||id_len>256||name_len>128||!observed_ms)return;
+  // The account owner passes its still-rooted identity source. No cached PlayerService or IAP
+  // service enters this read path. Existing SessionStats history runs independently.
+  std::unique_lock<std::mutex> guard_lock(stats_mutex,std::try_to_lock);
+  if(!guard_lock)return;
+  char counters[256]{};
+  try {
+   if(!ready){
+    auto api=static_cast<const PgrBootApi*>(pgrazor_runtime_bootstrap_api(1));
+    boot.version=1;boot.size=sizeof(boot);
+    require(api&&api->snapshot(&boot)==0,"Runtime unavailable");ready=true;
+   }
+   Root stats(call(current,"get_PlayerStats"));
+   if(stats&&class_name(stats.get())=="PlayerStatsProto"){
+    const auto v=read_stats(stats.get());
+    if(v.xp>0&&v.caught>=0&&v.seen>=0&&v.stops>=0&&v.hatched>=0&&std::isfinite(v.km)&&v.km>=0){
+     // Integer millikilometers avoid locale-dependent decimal formatting.
+     if(v.km<1e9f)std::snprintf(counters,sizeof(counters),"|%lld|%d|%d|%d|%lld|%d",
+         v.xp,v.caught,v.seen,v.stops,std::llround(double(v.km)*1000),v.hatched);
+    }
+   }
+  } catch (...) { /* The authenticated name remains observable. */ }
+  if(transport->get_bool(41,&demand)||!demand)return;
+  const auto *accounts=pgrazor_accounts_api(1);
+  pgrazor_account_snapshot_v1_t identity{};
+  if(!accounts)return;
+  accounts->api_sample(&identity);
+  if(!identity.has_identity||identity.logging_out||identity.queue_overflow_latched
+      ||identity.last_identity_ms!=observed_ms||identity.id_len!=id_len
+      ||std::memcmp(identity.id,id,id_len*sizeof(uint16_t)))return;
+  const auto append_hex=[](std::string &out,const uint16_t *data,uint16_t size){
+   const char digits[]="0123456789abcdef";
+   for(uint16_t i=0;i<size;i++)for(int shift=12;shift>=0;shift-=4)out.push_back(digits[(data[i]>>shift)&15]);
+  };
+  std::string packet=std::to_string(observed_ms)+"|";
+  append_hex(packet,id,id_len);packet.push_back('|');append_hex(packet,name,name_len);packet+=counters;
+  const char kind[]="local-api-trainer";
+  PgrRuntimeTransportString args[]={{kind,sizeof(kind)-1},{packet.data(),uint32_t(packet.size())}};
+  transport->emit(19,nullptr,0,args,2);
+ } catch (...) {}
 }

@@ -28,6 +28,7 @@ public final class Control {
     }
     public static String accountCommand(){return AccountProfiles.command();}
     public static String[] accountCommandSnapshot(){return AccountProfiles.commandSnapshot();}
+    public static boolean localApiTrainerRequested(){return LocalApiRuntime.trainerRequested();}
     public static boolean accountManagementAllowed(){return foreground && backendReady && connected();}
     public static void accountIdentity(String id,String name){AccountProfiles.identity(id,name);}
     public static void setAccountsReady(boolean ready){AccountProfiles.support(ready);}
@@ -1021,6 +1022,7 @@ public final class Control {
         catch (RuntimeException error) { suspendForBackground(); event("panel-error", error.toString()); }
     }
     public static void disconnect() {
+        LocalApiRuntime.identityLost();
         engine.pause(); backendReady = false;
         setQuickSummaryReady(false,"Catch summary support disconnected");
         setQuickBallReady(false,"Ball animation support disconnected");
@@ -1456,6 +1458,19 @@ public final class Control {
     private static final MapCatchStatus mapCatchStatus = new MapCatchStatus();
     public static String mapCatchLabel(){return autoThrow && autoThrowOnMap && hostLive() ? mapCatchStatus.label(android.os.SystemClock.elapsedRealtime()) : "";}
     public static void event(String kind, String detail) {
+        if ("local-api-trainer".equals(kind)) {
+            LocalApiRuntime.trainerObserved(detail);
+            return;
+        }
+        if ("account-native-gate".equals(kind) && LocalApiRuntime.trainerRequested()) {
+            try {
+                if (!"identity-observed".equals(new org.json.JSONObject(detail).optString("reason"))) {
+                    LocalApiRuntime.identityLost();
+                }
+            } catch (RuntimeException | org.json.JSONException invalid) {
+                LocalApiRuntime.identityLost();
+            }
+        }
         if("auto-raid".equals(kind))AutoRaid.publish(detail);
         if("map-auto-throw".equals(kind)){
             try{org.json.JSONObject result=new org.json.JSONObject(detail);

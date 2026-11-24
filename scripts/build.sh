@@ -8,13 +8,15 @@ cd "$ROOT"
 source "$ROOT/scripts/build-config.env"
 
 allow_dirty=false
-case "${1:-}" in
-    '') ;;
-    --allow-dirty) allow_dirty=true ;;
-    -h|--help) echo "Usage: $0 [--allow-dirty]"; exit 0 ;;
-    *) echo "Unknown argument: $1" >&2; exit 2 ;;
-esac
-(( $# <= 1 )) || { echo 'Too many arguments' >&2; exit 2; }
+research_api=false
+for argument in "$@"; do
+    case "$argument" in
+        --allow-dirty) allow_dirty=true ;;
+        --research-api) research_api=true ;;
+        -h|--help) echo "Usage: $0 [--allow-dirty] [--research-api]"; exit 0 ;;
+        *) echo "Unknown argument: $argument" >&2; exit 2 ;;
+    esac
+done
 
 mkdir -p ../cache "../dist/releases/$GAME_VERSION"
 # The workspace and native build caches are shared across invocations.
@@ -57,12 +59,12 @@ printf '%s\n' "$status" > "$stage/git-status.txt"
 "${compose[@]}" run --rm --no-deps -T --pull never \
     -e "GITHUB_SHA=$commit" builder bash -s -- \
     "$output" "$INPUT_NAME" "$INPUT_SHA" "$CERT_SHA" \
-    "$GAME_VERSION" "$GAME_CODE" "$branch" "$dirty" "$image_id" "$started" \
+    "$GAME_VERSION" "$GAME_CODE" "$branch" "$dirty" "$image_id" "$started" "$research_api" \
     <<'CONTAINER' 2>&1 | tee "$stage/build.log"
 set -Eeuo pipefail
 umask 077
 out="$1"; input="/input/$2"; input_sha="$3"; cert_sha="$4"
-version="$5"; code="$6"; branch="$7"; dirty="$8"; image_id="$9"; started="${10}"
+version="$5"; code="$6"; branch="$7"; dirty="$8"; image_id="$9"; started="${10}"; research_api="${11}"
 cd /workspace
 
 for var in PGRAZOR_KEYSTORE PGRAZOR_KEY_ALIAS PGRAZOR_STORE_PASSWORD PGRAZOR_KEY_PASSWORD; do
@@ -73,7 +75,9 @@ printf '%s  %s\n' "$input_sha" "$input" | sha256sum -c -
 python -B tools/prepare_native.py
 python -B pgrazor/art_build.py --check
 
-python -B pgrazor/nonroot.py --apk "$input" --google-browser-login \
+feature_options=()
+if [[ "$research_api" == true ]]; then feature_options+=(--research-api); fi
+python -B pgrazor/nonroot.py --apk "$input" --google-browser-login "${feature_options[@]}" \
     2>&1 | tee "$out/nonroot.log"
 
 # Resolve the run produced by this invocation, not the latest old build.
@@ -96,7 +100,7 @@ aapt dump badging "$apk" > "$out/badging.txt"
 grep -F "package: name='com.nianticlabs.pokemongo' versionCode='$code' versionName='$version'" "$out/badging.txt"
 (cd "$out" && sha256sum -c SHA256SUMS.txt)
 
-python -B - "$out" "$version" "$code" "$input_sha" "$cert_sha" "$branch" "$dirty" "$image_id" "$started" <<'PY'
+python -B - "$out" "$version" "$code" "$input_sha" "$cert_sha" "$branch" "$dirty" "$image_id" "$started" "$research_api" <<'PY'
 import hashlib
 import json
 import os
@@ -104,7 +108,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-out, version, code, input_sha, cert, branch, dirty, image_id, started = sys.argv[1:]
+out, version, code, input_sha, cert, branch, dirty, image_id, started, research_api = sys.argv[1:]
 out = Path(out)
 path = out / 'build-info.json'
 info = json.loads(path.read_text(encoding='utf-8'))
@@ -118,6 +122,7 @@ expected = {
     'apk_sha256': apk_sha,
     'source_commit': os.environ['GITHUB_SHA'],
     'device_tested': False,
+    'features': {'production_api': True, 'websocket': True, 'research_api': research_api == 'true'},
 }
 for key, value in expected.items():
     if info.get(key) != value:

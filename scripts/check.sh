@@ -23,6 +23,7 @@ docker compose -f compose.yaml -f - run --rm --no-deps -T --pull never \
     builder bash -Eeuo pipefail -c '
         cd /workspace
         python -B pgrazor/build.py
+        python -B pgrazor/build.py --nonroot --research-api
         python -B tools/check.py
     ' <<'COMPOSE' 2>&1 | tee "$log"
 services:
