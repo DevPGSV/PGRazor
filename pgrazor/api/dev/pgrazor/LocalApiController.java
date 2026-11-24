@@ -27,6 +27,7 @@ final class LocalApiController {
     private final Object stateLock = new Object();
     private volatile long generation;
     private LocalApiServer active;
+    private LocalApiConfig bound;
     private Future<?> retiring;
 
     LocalApiController(Store store) {
@@ -41,11 +42,16 @@ final class LocalApiController {
         return defaults;
     }
 
-    synchronized void start() throws IOException {
-        long epoch;
+    void start() throws IOException {
+        start(generation);
+    }
+
+    long generation() { return generation; }
+
+    synchronized void start(long epoch) throws IOException {
         synchronized (stateLock) {
+            if (generation != epoch) throw new IOException("Local API start was cancelled");
             if (active != null) return;
-            epoch = generation;
         }
         bind(settings(), epoch);
     }
@@ -83,11 +89,24 @@ final class LocalApiController {
             if (generation == epoch) {
                 retiring = null;
                 active = bound;
+                this.bound = settings.config;
                 return;
             }
         }
         bound.close();
         throw new IOException("Local API start was cancelled");
+    }
+
+    LocalApiConfig binding() {
+        synchronized (stateLock) {
+            return bound;
+        }
+    }
+
+    boolean isStopping() {
+        synchronized (stateLock) {
+            return retiring != null && !retiring.isDone();
+        }
     }
 
     boolean isRunning() {
@@ -108,6 +127,7 @@ final class LocalApiController {
         if (active != null) {
             retiring = active.stopAsync();
             active = null;
+            bound = null;
         }
     }
 

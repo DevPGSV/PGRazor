@@ -79,7 +79,7 @@ final class LocalApiServer implements AutoCloseable {
                     }
                 })
                 .bind(address).awaitUninterruptibly();
-            if (!bound.isSuccess()) throw new IOException("Could not bind preview server", bound.cause());
+            if (!bound.isSuccess()) throw new IOException("Could not bind Local API listener", bound.cause());
             listener = bound.channel();
         } catch (IOException | RuntimeException | LinkageError failure) {
             stopLoops();

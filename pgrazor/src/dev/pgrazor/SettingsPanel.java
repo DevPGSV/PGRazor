@@ -48,6 +48,8 @@ final class SettingsPanel {
     private Switch darkSwitch;
     // Settings search: the index is built once on first use, after every page has painted its labels.
     private SettingsSearch searchIndex;
+    private LocalApiSettingsPage localApiPage;
+    private int localApiIndex = -2;
     private final java.util.List<View> searchTargets=new java.util.ArrayList<>();
     private final java.util.HashSet<String> searchSeen=new java.util.HashSet<>();
     private LinearLayout searchBar;
@@ -248,6 +250,7 @@ final class SettingsPanel {
     /** Shows the home screen (index -1) or one category page, keeping the home scroll position for the way back. */
     private void open(int index){
         hideKeyboard();
+        if(localApiPage!=null) localApiPage.visible(index==localApiIndex);
         if(current<0&&index>=0)homeScroll=bodyScroll.getScrollY();
         clearQuery();
         current=index;refreshHome();
@@ -344,7 +347,13 @@ final class SettingsPanel {
         buildEventsPage();
         homeTarget=homeGroup("App");
         buildDisplayPage();
-        buildAccountsPage();   // last: its Diagnostics group collects status lines created by the pages above
+        buildAccountsPage();   // Its Diagnostics group collects status lines created by the pages above.
+        if (LocalApiSettingsPage.available()) {
+            localApiIndex = pages.size();
+            LinearLayout api = page(MenuIcon.SETTINGS, "HTTP API");
+            localApiPage = new LocalApiSettingsPage(activity, group(api, "Listener"),
+                group(api, "Authentication"), group(api, "LAN access"));
+        }
         homeTarget=null;
         results = new LinearLayout(activity); results.setOrientation(LinearLayout.VERTICAL); results.setVisibility(View.GONE); body.addView(results);
 
@@ -870,6 +879,7 @@ final class SettingsPanel {
         summary(7,"Halloween · Go Wild");
         summary(8,"UI "+Control.uiScalePercent()+"% · "+(Control.darkTheme()?"Dark":"Light")+" theme"+(Control.skipCutscenes()?" · Skip cutscenes":""));
         summary(9,"Accounts, export / import, run log, diagnostics");
+        if (localApiPage!=null) summary(localApiIndex,"Local server and authentication");
     }
 
     /** The root panel view; Pad owns attachment to the window and insets wiring. */
@@ -887,9 +897,10 @@ final class SettingsPanel {
         panel.postDelayed(()->{if(panel.getVisibility()==View.VISIBLE)SettingsUi.systemBars(activity,!SettingsUi.dark());},250);
     }
     /** Hidden state matches the original startup and the close affix: returns to the game underneath. */
-    void hide(){panel.setVisibility(View.GONE);SettingsUi.systemBars(activity,false);}
+    void hide(){if(localApiPage!=null)localApiPage.visible(false);panel.setVisibility(View.GONE);SettingsUi.systemBars(activity,false);}
     /** Release this panel's dialog polling when its owning activity panel is detached. */
     void close(){
+        if(localApiPage!=null)localApiPage.visible(false);
         if(berryPicker!=null)berryPicker.close();
         for(AlertDialog dialog:new java.util.ArrayList<>(itemDialogs))dialog.dismiss();
         itemDialogs.clear();handler.removeCallbacksAndMessages(null);

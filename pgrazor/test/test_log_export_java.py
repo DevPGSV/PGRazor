@@ -21,7 +21,7 @@ class LogExportJavaTests(unittest.TestCase):
             version = work / 'BuildVersion.java'
             version.write_text('package dev.pgrazor; final class BuildVersion { static final String NAME="test"; }')
             result = subprocess.run([str(compiler), '-encoding', 'UTF-8', '-source', '8', '-target', '8', '-cp', str(android), '-d', str(work), str(version), *map(str, (ROOT / 'src').rglob('*.java')),
-                                     str(ROOT / 'controls-only/dev/pgrazor/LocalApiRuntime.java')], capture_output=True, text=True, timeout=90)
+                                     *map(str, (ROOT / 'controls-only').rglob('*.java'))], capture_output=True, text=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             sources = []
             for original in json_sources[0].glob('*.java'):
