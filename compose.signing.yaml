@@ -1,0 +1,11 @@
+
+services:
+  builder:
+    env_file:
+      - path: ../secrets/signing.env
+        format: raw
+
+    volumes:
+      - ../secrets/pgrazor-release.jks:/secrets/pgrazor-release.jks:ro
+
+    network_mode: none
