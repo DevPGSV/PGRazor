@@ -255,7 +255,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.output and args.module_only: parser.error('--output requires the installer')
     if not args.skip_build:
-        subprocess.run([sys.executable, '-B', str(ROOT / 'build.py')], check=True)
+        subprocess.run([sys.executable, '-B', str(ROOT / 'build.py'), '--controls-only'], check=True)
     report, _ = package(args.source, download=args.download, installer=not args.module_only)
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)

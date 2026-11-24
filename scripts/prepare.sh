@@ -31,6 +31,7 @@ trap 'rc=$?; printf "Prepare exit status: %s; log: %s\n" "$rc" "$log" >&2' EXIT
 set -Eeuo pipefail
 cd /workspace
 python -B tools/prepare_native.py --download
+python -B pgrazor/http_dependencies.py --download
 python -B -c "import sys; sys.path.insert(0, 'pgrazor'); import dex_bridges; dex_bridges.dependencies(download=True)"
 python -B tools/prepare_native.py
 python -B pgrazor/art_build.py --check

@@ -50,14 +50,14 @@ def cleanup_generated_builds():
     except (OSError,subprocess.SubprocessError) as error:
         print('WARNING: APK packaging succeeded, but automatic cleanup did not finish: '+str(error),file=sys.stderr,flush=True)
 
-def validated_build():
-    receipt=ROOT/'build/build-state.json'
+def validated_build(*, api=False):
+    receipt=ROOT/'build'/('nonroot-build-state.json' if api else 'build-state.json')
     if not receipt.is_file(): raise RuntimeError('Build receipt missing. Run without --skip-build to compile the current source.')
     state=json.loads(receipt.read_text(encoding='utf-8'))
-    actual=build.source_fingerprints(ROOT)
+    actual=build.api_fingerprints(ROOT) if api else build.source_fingerprints(ROOT)
     if state.get('sources')!=actual: raise RuntimeError('Built classes are stale. Run without --skip-build.')
     if state.get('version')!=build.release_version(ROOT): raise RuntimeError('Built version is stale. Run without --skip-build.')
-    dex=ROOT/'build/pgrazor.dex'
+    dex=ROOT/'build'/('pgrazor-nonroot.dex' if api else 'pgrazor.dex')
     if not dex.is_file() or runtime_assets.sha256(dex)!=state.get('dex_sha256'): raise RuntimeError('Built DEX checksum mismatch')
     data=dex.read_bytes()
     if not data.startswith(b'dex\n') or b'Ldev/pgrazor/BootstrapProvider;' not in data:
@@ -202,16 +202,20 @@ def package(source, *,research_runtime=False,panel_only=False,download=False,pre
     validate_survey_options(camera_probe,panel_only,probe_abi if preview else game_runtime_abi,'--camera-probe')
     validate_survey_options(scene_probe,panel_only,probe_abi if preview else game_runtime_abi,'--scene-probe')
     validate_survey_options(interaction_probe,panel_only,probe_abi if preview else game_runtime_abi,'--interaction-probe')
-    dex=validated_build()
+    dex=validated_build(api=True) if compiled_gameplay else None if preview else validated_build()
     folder=ROOT/'build/nonroot'/(dt.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]); folder.mkdir(parents=True)
     inputs=input_apks(source,folder)
     package_name,base,rows,native_abis=inspect_set(inputs)
     if preview and package_name!='dev.pgrazor.preview': raise ValueError('Probe can only use our preview package')
     if preview:
+        state=json.loads((ROOT/'build/preview-build-state.json').read_text(encoding='utf-8'))
         with zipfile.ZipFile(base) as archive:
-            if hashlib.sha256(archive.read('classes.dex')).hexdigest()!=runtime_assets.sha256(dex):
-                raise RuntimeError('Preview APK and module DEX do not match. Rebuild before packaging.')
+            preview_hash=hashlib.sha256(archive.read('classes.dex')).hexdigest()
+        if state.get('sources')!=build.api_fingerprints(ROOT, preview=True) or state.get('dex_sha256')!=preview_hash or state.get('version')!=build.release_version(ROOT):
+            raise RuntimeError('Preview APK build is stale. Rebuild before packaging.')
     if not preview and package_name!='com.nianticlabs.pokemongo': raise ValueError('Expected Pokemon GO package; refusing a different input')
+    if compiled_gameplay:
+        axml.require_internet(next(info for path, info in rows if path == base))
     if not preview and native_abis!={'arm64-v8a'}:
         raise ValueError('This game packager currently requires an ARM64-only APK/set. Found: '+repr(native_abis))
     if game_runtime_abi != 'auto' and game_runtime_abi not in runtime_assets.ARCHES: raise ValueError('Unsupported game runtime ABI')
@@ -316,10 +320,12 @@ def package(source, *,research_runtime=False,panel_only=False,download=False,pre
             assets['assets/pgrazor/interaction-probe.js']=ROOT/'diagnostics/interaction-probe.js'
         for notice in ['NOTICE.txt','COPYING.frida-tools','bridge-provenance.json']:
             assets['assets/pgrazor/bridge-notices/'+notice]=ROOT/'vendor'/notice
-    if compiled_gameplay: assert_no_research_payload(assets)
+    if compiled_gameplay:
+        assets.update(build.netty_notices())
+        assert_no_research_payload(assets)
     report={'input':str(source.resolve()),'input_sha256':runtime_assets.sha256(source),'package':package_name,
         'mode':'compiled-gameplay' if compiled_gameplay else ('panel-only' if panel_only else 'research-runtime'),'original_abis':sorted(native_abis),'runtime_abi':game_runtime_abi if not preview else probe_abi,'runtime_abis':abis,
-        'game_acceptance':'UNTESTED','runtime':runtimes,'outputs':[], 'input_certificate_sha256':certificates[0],
+        'game_acceptance':'UNTESTED','local_http_api':compiled_gameplay,'runtime':runtimes,'outputs':[], 'input_certificate_sha256':certificates[0],
         'installation':'Not installed. Signed with local development key; cannot update a differently signed installation.'}
     if native_pilot:
         report['native_pilot'] = {
@@ -361,7 +367,7 @@ def package(source, *,research_runtime=False,panel_only=False,download=False,pre
             'source':str(ROOT/'diagnostics/interaction-probe.js'),
             'asset':'assets/pgrazor/interaction-probe.js',
             'sha256':runtime_assets.sha256(ROOT/'diagnostics/interaction-probe.js')}
-    report['module_sha256']=runtime_assets.sha256(dex)
+    report['module_sha256']=preview_hash if preview else runtime_assets.sha256(dex)
     if dex_bridge_receipt is not None: report['compiled_java_bridges']=dex_bridge_receipt
     for index,(path,info) in enumerate(rows):
         stem='base' if path==base else f'split-{index}'
@@ -472,8 +478,10 @@ def main(argv=None):
     validate_survey_options(args.camera_probe or args.camera_sample or args.camera_steering,args.panel_only,abi if args.probe or args.build_probe else (args.runtime_abi or 'auto'),'--camera-probe')
     validate_survey_options(args.scene_probe or args.scene_observe,args.panel_only,abi if args.probe or args.build_probe else (args.runtime_abi or 'auto'),'--scene-probe')
     validate_survey_options(args.interaction_probe,args.panel_only,abi if args.probe or args.build_probe else (args.runtime_abi or 'auto'),'--interaction-probe')
-    if not args.skip_build: command(sys.executable,ROOT/'build.py')
     preview=args.probe or args.build_probe
+    if not args.skip_build:
+        command(sys.executable, ROOT/'build.py',
+                *([] if preview else ['--controls-only' if args.research_runtime or args.panel_only else '--nonroot']))
     source=ROOT/'build/pgrazor-preview.apk' if preview else args.apk.resolve()
     options={'game_runtime_abi':args.runtime_abi} if args.runtime_abi else {}
     if args.research_runtime: options['research_runtime']=True

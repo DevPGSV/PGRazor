@@ -9,6 +9,7 @@ DENIED={'build','input','.artifacts','.local','hermes-swarm','frida-monitor','__
 NEW_MODULES={'pgrazor/art_build.py','pgrazor/dex_bridges.py','pgrazor/native_build.py',
  'tools/game_update.py','tools/game_bindings.py','docs/GAME_UPDATES.md','pgrazor/native/schema/game/catch_wait.h.in',
  'pgrazor/native_harness.py','pgrazor/runtime_audit.py','tools/native_routes_schema.py','tools/native_gift_schema.py','tools/prepare_native.py',
+ 'pgrazor/http_dependencies.py','pgrazor/vendor/netty/artifacts.json',
  'docs/NATIVE_MIGRATION.md','pgrazor/research/README.txt',
  'pgrazor/runtime/compiled-google-signin.js','pgrazor/runtime/compiled-location.js',
  'pgrazor/runtime/native-core.js','pgrazor/runtime/native-transport.js',
@@ -17,7 +18,7 @@ NEW_MODULES={'pgrazor/art_build.py','pgrazor/dex_bridges.py','pgrazor/native_bui
 def allowed_addition(name):
     path=Path(name)
     return name in NEW_MODULES or (name.startswith(('pgrazor/native/','pgrazor/art/',
-      'pgrazor/src/','pgrazor/test/','tools/dex_bridge/')) and
+      'pgrazor/src/','pgrazor/api/','pgrazor/controls-only/','pgrazor/preview/','pgrazor/vendor/netty/','pgrazor/test/','tools/dex_bridge/')) and
       (path.suffix.lower() in {'.cpp','.c','.h','.hpp','.inc','.java','.py','.json','.map','.md','.cjs'} or path.name=='CMakeLists.txt'))
 
 def validate(root,name):

@@ -25,9 +25,6 @@ jobs:
     env:
       PGRAZOR_BUILD_TOOLS: 36.0.0
       PGRAZOR_ANDROID_PLATFORM: android-36
-      PGRAZOR_KEY_ALIAS: ${{ secrets.PGRAZOR_KEY_ALIAS }}
-      PGRAZOR_STORE_PASSWORD: ${{ secrets.PGRAZOR_STORE_PASSWORD }}
-      PGRAZOR_KEY_PASSWORD: ${{ secrets.PGRAZOR_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -82,6 +79,8 @@ jobs:
           if (!(Test-Path -LiteralPath "docs/releases/$env:RELEASE_TAG.md")) { throw "Add release notes in docs/releases/$env:RELEASE_TAG.md" }
       - name: Prepare pinned DEX test dependencies
         run: python -c "import sys; sys.path.insert(0, 'pgrazor'); import dex_bridges; dex_bridges.dependencies(download=True)"
+      - name: Prepare pinned HTTP dependencies
+        run: python -B pgrazor/http_dependencies.py --download
       - run: python -B tools/check.py
       - name: Configure temporary signing path
         shell: pwsh
@@ -94,12 +93,18 @@ jobs:
         run: python -B tools/private_input.py
       - name: Build playable package
         env:
+          PGRAZOR_KEY_ALIAS: ${{ secrets.PGRAZOR_KEY_ALIAS }}
+          PGRAZOR_STORE_PASSWORD: ${{ secrets.PGRAZOR_STORE_PASSWORD }}
+          PGRAZOR_KEY_PASSWORD: ${{ secrets.PGRAZOR_KEY_PASSWORD }}
           PGRAZOR_VERSION: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python -B pgrazor/nonroot.py --apk pgrazor/input/game.apkm --google-browser-login
       - name: Produce single installable APK
         shell: pwsh
         env:
+          PGRAZOR_KEY_ALIAS: ${{ secrets.PGRAZOR_KEY_ALIAS }}
+          PGRAZOR_STORE_PASSWORD: ${{ secrets.PGRAZOR_STORE_PASSWORD }}
+          PGRAZOR_KEY_PASSWORD: ${{ secrets.PGRAZOR_KEY_PASSWORD }}
           PGRAZOR_VERSION: ${{ inputs.tag }}
         run: |
           $candidate = Get-ChildItem -LiteralPath pgrazor/build/nonroot -Directory | Sort-Object Name -Descending | Select-Object -First 1
@@ -109,8 +114,11 @@ jobs:
       - name: Build rooted installer and manual module
         # Keep this after release_apk.py: rooted.py appends both Root checksums.
         env:
+          PGRAZOR_KEY_ALIAS: ${{ secrets.PGRAZOR_KEY_ALIAS }}
+          PGRAZOR_STORE_PASSWORD: ${{ secrets.PGRAZOR_STORE_PASSWORD }}
+          PGRAZOR_KEY_PASSWORD: ${{ secrets.PGRAZOR_KEY_PASSWORD }}
           PGRAZOR_VERSION: ${{ inputs.tag }}
-        run: python -B pgrazor/rooted.py pgrazor/input/game.apkm --skip-build --download --output dist/release
+        run: python -B pgrazor/rooted.py pgrazor/input/game.apkm --download --output dist/release
       - name: Verify all three release downloads
         env:
           RELEASE_TAG: ${{ inputs.tag }}

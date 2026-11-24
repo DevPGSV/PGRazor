@@ -25,6 +25,7 @@ $env:ANDROID_NDK_HOME = Join-Path $env:ANDROID_SDK_ROOT 'ndk/27.3.13750724'
 $env:PGRAZOR_ART_NDK = Join-Path $env:ANDROID_SDK_ROOT 'ndk/29.0.14206865'
 $env:PGRAZOR_NATIVE_DEPS = Join-Path (Get-Location) 'pgrazor/build/native/deps'
 python -B tools/prepare_native.py --download
+python -B pgrazor/http_dependencies.py --download  # standalone preview only
 ```
 
 Run each command successfully before continuing. On Windows with several Python versions, use `py -3.12` in place of `python` consistently. The explicit `--download` permits fetching the pinned LSPlant, DexBuilder, parallel_hashmap, xz-embedded and SHA-verified Dobby sources. Only the required Git submodules are initialized. Existing modified or incorrectly pinned dependency trees are rejected; setup never resets them.
@@ -74,7 +75,7 @@ Frida is available only through explicit `--research-runtime` selection for supp
 
 `python -B tools/source_bundle.py` archives tracked working-tree source, omitting tracked files deleted from the working tree. It fails clearly if allowlisted new project source would otherwise be omitted. Review those files before staging them or explicitly use `python -B tools/source_bundle.py --include-working-tree` for a local archive.
 
-The explicit option adds only nonignored source beneath `pgrazor/native`, `pgrazor/art`, `pgrazor/src`, `pgrazor/test`, `tools/dex_bridge`, and named native/ART/schema build modules. It does not collect arbitrary untracked notes or handoffs. Both modes reject selected credential/generated paths and symlinks/junctions, including linked parent directories. The option does not stage or commit files; review the archive before distributing it. Inputs, signing keys, device evidence and retention history remain local.
+The explicit option adds only nonignored source beneath `pgrazor/native`, `pgrazor/art`, `pgrazor/src`, `pgrazor/api`, `pgrazor/controls-only`, `pgrazor/preview`, `pgrazor/test`, `pgrazor/vendor/netty`, `tools/dex_bridge`, and named build modules. It does not collect arbitrary untracked notes or handoffs. Both modes reject selected credential/generated paths and symlinks/junctions, including linked parent directories. The option does not stage or commit files; review the archive before distributing it. Inputs, signing keys, device evidence and retention history remain local.
 
 ## Signing
 
@@ -82,7 +83,7 @@ Local development creates an ignored `build/pgrazor-development.jks` key with al
 
 For explicit signing, set `PGRAZOR_KEYSTORE`, `PGRAZOR_KEY_ALIAS`, `PGRAZOR_STORE_PASSWORD`, and `PGRAZOR_KEY_PASSWORD`. Passwords are passed to Android signing tools through environment variable references, not command-line values. A missing configured key or password fails the build. Keep the same certificate across updates.
 
-The `build.py` output named `pgrazor-preview.apk` is a controls preview, **not the game**. Do not publish it as a working PGRazor release.
+Running `python -B pgrazor/build.py` builds the controls preview using SHA-256-pinned Netty JARs in `.artifacts/http-deps/`. Use `--nonroot` for the compiled non-root game DEX with the pinned HTTP dependencies. Use `--controls-only` for the Root and research DEX without Netty. Production and Root packagers select their corresponding build mode automatically. The `pgrazor-preview.apk` output is a controls preview, **not the game**. Do not publish it as a working PGRazor release.
 
 ## GitHub Actions: non-root and rooted releases
 

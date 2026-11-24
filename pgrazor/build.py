@@ -10,11 +10,38 @@ import uuid
 import hashlib
 import json
 
+import http_dependencies
+
 ROOT = Path(__file__).resolve().parent
 
 def source_fingerprints(root):
-    paths = [*sorted((root/'src').rglob('*.java')), root/'VERSION', root/'AndroidManifest.xml']
+    paths = [*sorted((root/'src').rglob('*.java')), *sorted((root/'controls-only').rglob('*.java')),
+             root/'VERSION', root/'AndroidManifest.xml']
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+
+def api_fingerprints(root, preview=False):
+    paths = [*sorted((root/'src').rglob('*.java')), *sorted((root/'api').rglob('*.java')),
+             root/'VERSION', root/'AndroidManifest.xml', root/'vendor/netty/artifacts.json',
+             *sorted((root/'vendor/netty').rglob('*.md'))]
+    if preview:
+        paths.extend(sorted((root/'preview').rglob('*.java')))
+    return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+
+def netty_notices():
+    return {'assets/licenses/netty/'+path.relative_to(http_dependencies.VENDOR).as_posix(): path
+            for path in sorted(http_dependencies.VENDOR.rglob('*.md'))}
+
+def compile_dex(directory, *inputs):
+    directory.mkdir()
+    run(android_tool('d8'), '--min-api', '28', '--lib', ANDROID, '--output', directory, *inputs)
+    if sorted(path.name for path in directory.glob('*.dex')) != ['classes.dex']:
+        raise RuntimeError('Expected a single classes.dex in ' + str(directory))
+    return directory/'classes.dex'
+
+def class_jar(jar, classes):
+    with zipfile.ZipFile(jar, 'w', zipfile.ZIP_DEFLATED) as out:
+        for path in sorted(classes.rglob('*.class')):
+            out.write(path, path.relative_to(classes).as_posix())
 
 def release_version(root):
     version = os.environ.get('PGRAZOR_VERSION', (root/'VERSION').read_text(encoding='utf-8').strip())
@@ -87,9 +114,12 @@ def signing_args():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--test-only', action='store_true', help='Test coordinates and native ABI validation without the Android SDK')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--test-only', action='store_true', help='Test coordinates and native ABI validation without the Android SDK')
+    mode.add_argument('--nonroot', action='store_true', help='Compile the non-root game DEX with its offline API dependencies')
+    mode.add_argument('--controls-only', action='store_true', help='Compile the embedded game DEX without preview dependencies or signing')
     args = parser.parse_args()
-    for folder in ['classes','dex','tests','input']:
+    for folder in ['tests','input']:
         (BUILD / folder).mkdir(parents=True,exist_ok=True)
     (ROOT / 'input').mkdir(exist_ok=True)
     run('javac','-encoding','UTF-8','-d',BUILD/'tests',ROOT/'src/dev/pgrazor/MotionEngine.java',ROOT/'test/MotionTest.java',ROOT/'src/dev/pgrazor/RuntimeAbi.java',ROOT/'test/RuntimeAbiTest.java',ROOT/'src/dev/pgrazor/MapProjection.java',ROOT/'test/MapProjectionTest.java')
@@ -109,34 +139,72 @@ def main():
     run('javac','-encoding','UTF-8','-d',BUILD/'tests',ROOT/'src/dev/pgrazor/ShundoPacing.java',ROOT/'test/ShundoPacingTest.java')
     run('java','-cp',BUILD/'tests','dev.pgrazor.ShundoPacingTest')
     if args.test_only: return
-    version = release_version(ROOT)
-    # Fresh outputs prevent a failed compiler from silently reusing old classes.
-    classes=BUILD/('compile-'+uuid.uuid4().hex[:12]); classes.mkdir()
+    if not args.nonroot:
+        classes, jar = compile_controls('controls-only', [])
+        dex = compile_dex(classes/'controls-dex', jar)
+        record_dex(dex, 'pgrazor', 'build-state', source_fingerprints(ROOT))
+    if args.controls_only:
+        return
+    jars = http_dependencies.dependencies()
+    classes, jar = compile_controls('api', jars)
+    dex = compile_dex(classes/'nonroot-dex', jar, *jars)
+    record_dex(dex, 'pgrazor-nonroot', 'nonroot-build-state', api_fingerprints(ROOT))
+    if not args.nonroot:
+        build_preview(classes, jar, jars)
+
+def record_dex(dex, filename, receipt, sources):
+    shutil.copyfile(dex, BUILD/(filename+'.dex'))
+    state = {'version':release_version(ROOT), 'sources':sources,
+             'dex_sha256':hashlib.sha256(dex.read_bytes()).hexdigest()}
+    (BUILD/(receipt+'.json')).write_text(json.dumps(state, indent=2), encoding='utf-8')
+
+def compile_controls(variant, jars):
+    classes = BUILD/('compile-'+uuid.uuid4().hex[:12])
+    classes.mkdir()
     version_source = classes/'BuildVersion.java'
-    version_source.write_text('package dev.pgrazor; final class BuildVersion { static final String NAME = "' + version + '"; }\n', encoding='utf-8')
-    run('javac','-encoding','UTF-8','-source','8','-target','8','-classpath',ANDROID,'-d',classes,version_source,*sorted((ROOT/'src').rglob('*.java')))
-    for name in ['PreviewActivity','BootstrapProvider','LogActivity','LogExport','Control','Pad','MotionEngine','RuntimeAbi','MapProjection','WorldMapDialog','SavedPlaces','LocationState','CameraSteering','CameraHeadingState']:
-        if not (classes/f'dev/pgrazor/{name}.class').is_file():
-            raise RuntimeError(f'Android compilation produced no {name} class. Check SDK access and javac output above.')
-    run('javac','-encoding','UTF-8','-classpath',str(ANDROID)+os.pathsep+str(classes),'-d',BUILD/'tests',ROOT/'src/dev/pgrazor/SavedPlaces.java',ROOT/'test/SavedPlacesValidationTest.java')
-    run('java','-cp',BUILD/'tests','SavedPlacesValidationTest')
-    jar = BUILD/'controls.jar'
-    with zipfile.ZipFile(jar,'w',zipfile.ZIP_DEFLATED) as out:
-        for path in classes.rglob('*.class'): out.write(path,path.relative_to(classes).as_posix())
-    run(android_tool('d8'),'--min-api','28','--lib',ANDROID,'--output',BUILD/'dex',jar)
+    version_source.write_text('package dev.pgrazor; final class BuildVersion { static final String NAME = "' + release_version(ROOT) + '"; }\n', encoding='utf-8')
+    sources = sorted((ROOT/'src').rglob('*.java')) + sorted((ROOT/variant).rglob('*.java'))
+    run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
+        '-classpath', os.pathsep.join(map(str, [ANDROID, *jars])), '-d', classes, version_source, *sources)
+    if not (classes/'dev/pgrazor/BootstrapProvider.class').is_file():
+        raise RuntimeError('Android compilation produced no BootstrapProvider class')
+    run('javac', '-encoding', 'UTF-8', '-classpath', os.pathsep.join(map(str, [ANDROID, classes])),
+        '-d', BUILD/'tests', ROOT/'src/dev/pgrazor/SavedPlaces.java', ROOT/'test/SavedPlacesValidationTest.java')
+    run('java', '-cp', BUILD/'tests', 'SavedPlacesValidationTest')
+    jar = classes/'controls.jar'
+    class_jar(jar, classes)
+    return classes, jar
+
+def build_preview(classes, controls_jar, jars):
+    preview_classes = classes/'preview-classes'
+    preview_classes.mkdir()
+    preview_sources = sorted((ROOT/'preview').rglob('*.java'))
+    classpath = os.pathsep.join(map(str, [classes, *jars]))
+    run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
+        '-classpath', str(ANDROID)+os.pathsep+classpath, '-d', preview_classes, *preview_sources)
+    run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
+        '-classpath', classpath, '-d', BUILD/'tests',
+        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java')
+    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest'):
+        run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.'+test)
+    preview_jar = classes/'preview.jar'
+    class_jar(preview_jar, preview_classes)
+    dex = compile_dex(classes/'preview-dex', controls_jar, preview_jar, *jars)
     unsigned=BUILD/'preview-unsigned.apk'
     run(android_tool('aapt'),'package','-f','-M',ROOT/'AndroidManifest.xml','-I',ANDROID,'-F',unsigned)
     with zipfile.ZipFile(unsigned,'a',zipfile.ZIP_DEFLATED) as out:
-        out.write(BUILD/'dex/classes.dex','classes.dex')
+        out.write(dex,'classes.dex')
+        for name, notice in netty_notices().items():
+            out.write(notice, name)
         for name,path in map_icon_assets().items(): out.write(path,'assets/pgrazor/map-icons/'+name)
         for name,path in feed_icon_assets().items(): out.write(path,'assets/pgrazor/feed-icons/pokemon/'+name)
     run(android_tool('zipalign'),'-f','4',unsigned,BUILD/'preview-aligned.apk')
     apk=BUILD/'pgrazor-preview.apk'
     run(android_tool('apksigner'),'sign',*signing_args(),'--out',apk,BUILD/'preview-aligned.apk')
     run(android_tool('apksigner'),'verify',apk)
-    shutil.copyfile(BUILD/'dex/classes.dex',BUILD/'pgrazor.dex')
-    fingerprints=source_fingerprints(ROOT)
-    (BUILD/'build-state.json').write_text(json.dumps({'version':version,'sources':fingerprints,'dex_sha256':hashlib.sha256((BUILD/'pgrazor.dex').read_bytes()).hexdigest()},indent=2),encoding='utf-8')
-    print('Built:',apk)
+    print('Built:', apk)
+    receipt = {'sources':api_fingerprints(ROOT, preview=True), 'version':release_version(ROOT),
+               'dex_sha256':hashlib.sha256(dex.read_bytes()).hexdigest()}
+    (BUILD/'preview-build-state.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
 
 if __name__=='__main__': main()

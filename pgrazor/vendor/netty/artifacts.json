@@ -1,0 +1,14 @@
+{
+  "version": "4.2.21.Final",
+  "sha256": {
+    "netty-buffer": "4b3420b8a0e3928838895749af250fac3454b61ec48a95434345f815e7205b09",
+    "netty-codec-base": "319f70f98ab52c27c3a46c1fd8f0f32746b7bab39bf7e3f126f2c3f2d0ab9b23",
+    "netty-codec-compression": "0c2d4fd7e91aa5f15c5d4e91b6f3bfe8881a16f0260c9e82d1383f5453293974",
+    "netty-codec-http": "fb61bba9877867424d20b188dd6cf77bed14e82e1622a19be05d45886f4124ce",
+    "netty-common": "7c501587b9496b79cc65822a4cf53b07b5067ebac9533b8484524b94ab182c74",
+    "netty-handler": "dc1cf3063224ab6d5468f51ec3a064839e993eb47e324c2de546c79052e5b051",
+    "netty-resolver": "3ba53c71a41248f10cd49e27d3d969903f327353c8bf218e378ca902b89c6abd",
+    "netty-transport-native-unix-common": "47836e5fffa2e4aca994c5e31f992a12df2511a8be697d9bf104ac8c8df51459",
+    "netty-transport": "3bfe0b8feba613aba673b97a865073d57b07fd15aef1380800180ea02cf41ce4"
+  }
+}

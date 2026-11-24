@@ -63,9 +63,11 @@ Run from the checkout, or invoke each script by its path from elsewhere.
 
 - `prepare.sh`: builds the image, prepares native and Java dependencies, checks
   prerequisites and creates `.env` with host UID/GID if missing. Needs network;
-  does not mount the signing key.
+  does not mount the signing key. Netty JARs for the preview and compiled non-root build are verified against
+  pinned SHA-256 values and cached at `../cache/artifacts/http-deps/`.
 - `check.sh`: builds the standalone preview and runs upstream checks offline,
-  without the release key. Two Windows-only tests are expected to be skipped
+  without the release key. The preview build runs a JVM loopback HTTP transport test.
+  Two Windows-only tests are expected to be skipped
   for the currently tested source version.
 - `build.sh`: requires a clean Git working tree unless `--allow-dirty` is
   specified. Verifies input checksum, builds offline with the signing key,

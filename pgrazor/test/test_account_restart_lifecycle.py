@@ -99,7 +99,8 @@ class AccountRestartLifecycleTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding='utf-8')
                 sources.append(path)
-            sources += [ROOT / 'src/dev/pgrazor/AccountProfiles.java', ROOT / 'src/dev/pgrazor/AccountCommandState.java']
+            sources += [ROOT / 'src/dev/pgrazor/AccountProfiles.java', ROOT / 'src/dev/pgrazor/AccountCommandState.java',
+                        ROOT / 'controls-only/dev/pgrazor/LocalApiRuntime.java']
             result = subprocess.run([str(javac), '-encoding', 'UTF-8', '-d', directory, *map(str, sources)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(java), '-cp', directory, 'dev.pgrazor.RestartLifecycleTest'], capture_output=True, text=True, timeout=20)

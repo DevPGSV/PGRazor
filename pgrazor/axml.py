@@ -254,7 +254,7 @@ def inspect_manifest(data):
     """
     _, chunks, pool, _, _ = _parse(data)
     result = {'package': None, 'split': None, 'versionCode': None, 'versionName': None,
-              'minSdkVersion': None, 'providers': [], 'activities': []}
+              'minSdkVersion': None, 'permissions': [], 'providers': [], 'activities': []}
     manifests = 0
     applications = 0
     for _, event, name, attrs, depth in _walk(chunks, pool):
@@ -267,6 +267,8 @@ def inspect_manifest(data):
             result['versionName'] = attrs.get((ANDROID_NS, 'versionName'))
         if name == 'uses-sdk' and depth == 1:
             result['minSdkVersion'] = attrs.get((ANDROID_NS, 'minSdkVersion'))
+        if name == 'uses-permission' and depth == 1 and (ANDROID_NS, 'maxSdkVersion') not in attrs:
+            result['permissions'].append(attrs.get((ANDROID_NS, 'name')))
         if name == 'application' and depth == 1: applications += 1
         if name == 'provider':
             result['providers'].append({key: attrs.get((ANDROID_NS, key)) for key in ATTR_IDS})
@@ -277,6 +279,10 @@ def inspect_manifest(data):
     result['applications'] = applications
     return result
 
+
+def require_internet(info):
+    if 'android.permission.INTERNET' not in info['permissions']:
+        raise ValueError('Non-root Local API requires unrestricted android.permission.INTERNET')
 
 def patch_manifest(data):
     """Append unexported BootstrapProvider and LogActivity declarations.

@@ -40,6 +40,7 @@ public final class BootstrapProvider extends ContentProvider {
         try { sessionRecovered=AccountSessions.recover(context); }
         catch(IOException failure) { throw new IllegalStateException("Saved account session could not be restored; game startup stopped",failure); }
         Control.embedded("Embedded controls - starting"); Control.begin(app);
+        if (!PgAssets.rooted()) LocalApiRuntime.init(app);
         try {
             android.content.pm.PackageInfo game=context.getPackageManager().getPackageInfo(context.getPackageName(),0);
             Control.event("session-environment","diagnostics=2 module="+BuildVersion.NAME

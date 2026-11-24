@@ -69,6 +69,7 @@ final class AccountProfiles {
     static boolean canResetSignIn(){return store!=null&&available&&!verified&&!switching&&!restarting&&!deleting;}
     static void resetSignIn(){
         if(!canResetSignIn())return;
+        LocalApiRuntime.invalidate();
         switching=true;commands.issue("reset-login:"+java.util.UUID.randomUUID());message="Restoring sign-in choices...";
         final String request=commands.current();diag("account-command","issued "+AccountCommandState.kind(request));
         main.postDelayed(()->{if(request.equals(commands.current())&&!restarting){diag("account-command","timed out "+AccountCommandState.kind(request));logoutFailed();}},20000);
@@ -116,6 +117,7 @@ final class AccountProfiles {
                     main.post(()->{
                         if(epoch!=generation)return;
                         if(actual.id.equals(startupId)){verified=true;message=actual.label;diag("account-state","active account verified");return;}
+                        LocalApiRuntime.invalidate();
                         switching=true;message="Restoring " + actual.label;diag("account-state",created?"new account profile created; restarting with default settings":"restoring a saved account");
                         try{Control.quiesceAccounts();}catch(IOException error){fail("Could not save outgoing location. Reopen the game.");return;}
                         io.execute(()->{
@@ -128,6 +130,7 @@ final class AccountProfiles {
         });
     }
     static void sessionEnded(){
+        LocalApiRuntime.invalidate();
         verified=false;generation++;
         main.post(()->{observed="";try{Control.quiesceAccounts();}catch(IOException ignored){}message="Signed out; choose Google or PTC to continue";diag("account-state","session ended; sign-in required");});
     }
@@ -151,6 +154,7 @@ final class AccountProfiles {
     });}
     static void switchTo(Activity activity,String id) {
         if(!canSwitch())return;
+        LocalApiRuntime.invalidate();
         switching=true;verified=false;generation++;diag("account-command","switch requested");
         try{Control.quiesceAccounts();}catch(IOException error){fail("Could not save outgoing location. Reopen the game.");return;}
         message="Saving account...";

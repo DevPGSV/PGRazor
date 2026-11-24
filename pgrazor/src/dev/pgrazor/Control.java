@@ -1348,6 +1348,7 @@ public final class Control {
             finally{if(out!=null)settingsFile.failWrite(out);}
             loadSettings(app); // Restores preferences and explicitly leaves VGP off.
             engine.stop();engine.speed(speed);mapTapEpoch++;restoreRuntime("settings-import");saveState(); // Keep current coordinates; never resume a route.
+            LocalApiRuntime.invalidate();
         }
     }
     // Capture current preferences under stateLock; serialization and AtomicFile IO run off the main thread.

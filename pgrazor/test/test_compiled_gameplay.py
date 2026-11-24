@@ -86,6 +86,7 @@ class CompiledGameplayPackageTests(unittest.TestCase):
                            'dependencies': {'fixture': {'commit': 'fixture-pin'}}, 'relinkability': 'retain fixture objects locally'}
             (art_session / 'receipt.json').write_text(json.dumps(art_receipt))
             info = {'package': 'com.nianticlabs.pokemongo', 'split': None,
+                    'permissions': ['android.permission.INTERNET'],
                     'providers': [{'name': axml.PROVIDER, 'exported': False}]}
 
             def sdk_fixture(*args, **kwargs):
@@ -118,6 +119,7 @@ class CompiledGameplayPackageTests(unittest.TestCase):
 
                 self.assertEqual(json.loads((folder / 'report.json').read_text()), report)
                 self.assertEqual(report['mode'], 'compiled-gameplay')
+                self.assertTrue(report['local_http_api'])
                 for omitted in ('bridge_sha256', 'bridge_upstream_patch', 'agent_sha256', 'script_bundles', 'diagnostics'):
                     self.assertNotIn(omitted, report)
                 self.assertEqual(report['runtime'], [])
@@ -127,6 +129,8 @@ class CompiledGameplayPackageTests(unittest.TestCase):
 
                 with zipfile.ZipFile(report['outputs'][0]['file']) as archive:
                     names = set(archive.namelist())
+                    for name, notice in nonroot.build.netty_notices().items():
+                        self.assertEqual(archive.read(name), notice.read_bytes())
                     mode = json.loads(archive.read('assets/pgrazor/mode.json'))
                     self.assertIs(mode['gadget'], False)
                     self.assertIs(mode['compiledGameplay'], True)

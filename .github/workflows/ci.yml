@@ -34,6 +34,8 @@ jobs:
       - name: Prepare pinned DEX test dependencies
         run: python -c "import sys; sys.path.insert(0, 'pgrazor'); import dex_bridges; dex_bridges.dependencies(download=True)"
       - run: python -B tools/check.py
+      - name: Prepare pinned HTTP preview dependencies
+        run: python -B pgrazor/http_dependencies.py --download
       - name: Compile Android controls (not a playable game build)
         run: python -B pgrazor/build.py
       - name: Compile Root installer (no game input or signing secrets)

@@ -10,6 +10,10 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import java.io.*;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.security.SecureRandom;
+import java.util.Base64;
 
 /**
  * Standalone preview of the PGRazor control surface: the same design tokens as the in-game panel,
@@ -20,6 +24,11 @@ public final class PreviewActivity extends Activity {
     private TextView consumer, statusText, modeText;
     private SettingsUi.Dot statusDot;
     private int samples;
+    private LocalApiServer httpServer;
+    private boolean httpBusy;
+    private Button httpToggle;
+    private TextView httpStatus;
+    private TextView httpToken;
     public void onCreate(Bundle saved) {
         super.onCreate(saved);
         Control.begin(getApplication());
@@ -92,8 +101,88 @@ public final class PreviewActivity extends Activity {
         LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(-1, -2); noteParams.topMargin = SettingsUi.dp(this, 8);
         screen.addView(exportNote, noteParams);
 
+        TextView httpNote = SettingsUi.text(this,
+            "HTTP transport test. Start on a trusted Wi-Fi network. The token travels in plaintext.",
+            12, SettingsUi.muted());
+        screen.addView(httpNote);
+        httpToggle = SettingsUi.button(this, "Start HTTP test");
+        screen.addView(httpToggle);
+        httpToggle.setOnClickListener(v -> {
+            if (httpServer == null) startHttpTest();
+            else stopHttpTest();
+        });
+        httpStatus = SettingsUi.text(this, "HTTP test stopped", 12, SettingsUi.muted());
+        screen.addView(httpStatus);
+        httpToken = SettingsUi.text(this, "", 12, SettingsUi.ink());
+        httpToken.setTextIsSelectable(true);
+        httpToken.setVisibility(View.GONE);
+        screen.addView(httpToken);
+
         setContentView(scroll);
     }
+    private void startHttpTest() {
+        if (httpBusy) return;
+        httpBusy = true;
+        httpToggle.setEnabled(false);
+        httpStatus.setText("Starting HTTP test…");
+        new Thread(() -> {
+            try {
+                byte[] random = new byte[32];
+                new SecureRandom().nextBytes(random);
+                String token = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+                LocalApiServer started = LocalApiServer.start(
+                    new InetSocketAddress(InetAddress.getByAddress(new byte[4]), 8765), token,
+                    LocalApiRoutes.preview(), () -> true);
+                handler.post(() -> {
+                    if (isDestroyed() || isFinishing()) {
+                        new Thread(started::close, "preview-http-stop").start();
+                        return;
+                    }
+                    httpServer = started;
+                    httpBusy = false;
+                    httpToggle.setEnabled(true);
+                    httpToggle.setText("Stop HTTP test");
+                    httpStatus.setText("Listening on IPv4 port " + started.port() + " · GET /api/v1/status");
+                    httpToken.setText(token);
+                    httpToken.setVisibility(View.VISIBLE);
+                });
+            } catch (IOException | RuntimeException | LinkageError failure) {
+                handler.post(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    httpBusy = false;
+                    httpToggle.setEnabled(true);
+                    httpStatus.setText("Could not start HTTP test (" + failure.getClass().getSimpleName() + ")");
+                });
+            }
+        }, "preview-http-start").start();
+    }
+
+    private void stopHttpTest() {
+        LocalApiServer server = httpServer;
+        httpServer = null;
+        if (server == null) return;
+        httpBusy = true;
+        httpToggle.setEnabled(false);
+        httpStatus.setText("Stopping HTTP test…");
+        httpToken.setText("");
+        httpToken.setVisibility(View.GONE);
+        new Thread(() -> {
+            server.close();
+            handler.post(() -> {
+                if (isDestroyed() || isFinishing()) return;
+                httpBusy = false;
+                httpToggle.setEnabled(true);
+                httpToggle.setText("Start HTTP test");
+                httpStatus.setText("HTTP test stopped");
+            });
+        }, "preview-http-stop").start();
+    }
+
+    @Override protected void onDestroy() {
+        stopHttpTest();
+        super.onDestroy();
+    }
+
     private final Runnable sample = new Runnable() {
         public void run() {
             Location value = new Location("pgrazor-synthetic-probe"); value.setLatitude(12.5); value.setLongitude(45.25); value.setSpeed(2); value.setBearing(30);

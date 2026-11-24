@@ -109,6 +109,13 @@ def release(run, destination):
     destination.mkdir(parents=True, exist_ok=True)
     unsigned, aligned, signed = (destination/name for name in ('unsigned.apk', 'aligned.apk', 'PGRazor.apk'))
     merge(apks, unsigned)
+    if report.get('local_http_api'):
+        with zipfile.ZipFile(unsigned) as archive:
+            axml.require_internet(axml.inspect_manifest(archive.read('AndroidManifest.xml')))
+            required_notices = build.netty_notices()
+            if not required_notices or any(archive.read(name) != notice.read_bytes()
+                                           for name, notice in required_notices.items()):
+                raise ValueError('Local API dependency notices are missing or changed')
     nonroot.command(build.android_tool('zipalign'), '-f', '-P', '16', '4', unsigned, aligned)
     nonroot.command(build.android_tool('apksigner'), 'sign', *build.signing_args(), '--out', signed, aligned)
     nonroot.command(build.android_tool('apksigner'), 'verify', signed)

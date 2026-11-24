@@ -69,6 +69,29 @@ def fixture_with_log_activity(exported=False, intent_filter=False):
 
 
 class AxmlTests(unittest.TestCase):
+    def test_local_api_requires_unbounded_internet_permission(self):
+        for limits in (None, 28):
+            _, chunks, pool, _, _ = axml._parse(fixture())
+            ns = pool.add(axml.ANDROID_NS)
+            key = pool.add('name')
+            tag = pool.add('uses-permission')
+            value = pool.add('android.permission.INTERNET')
+            attributes = struct.pack('<IIIHBBI', ns, key, value, 8, 0, 3, value)
+            if limits is not None:
+                max_sdk = pool.add('maxSdkVersion')
+                attributes += struct.pack('<IIIHBBI', ns, max_sdk, 0xffffffff, 8, 0, 0x10, limits)
+            grant = node(0x102, struct.pack('<IIHHHHHH', 0xffffffff, tag, 20, 20,
+                                          1 + int(limits is not None), 0, 0, 0) + attributes)
+            end = node(0x103, struct.pack('<II', 0xffffffff, tag))
+            manifest = chunk(3, pool.build() + chunks[1][1] + grant + end
+                             + b''.join(raw for _, raw in chunks[2:]))
+            info = axml.inspect_manifest(axml.patch_manifest(manifest))
+            if limits is None:
+                axml.require_internet(info)
+            else:
+                with self.assertRaisesRegex(ValueError, r'permission.INTERNET'):
+                    axml.require_internet(info)
+
     def test_google_callback_opt_in_preserves_components(self):
         original = axml.patch_manifest(fixture())
         before = axml.inspect_manifest(original)
