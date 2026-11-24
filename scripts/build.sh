@@ -5,11 +5,7 @@ umask 077
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
-GAME_VERSION=0.437.0
-GAME_CODE=2026110902
-INPUT_NAME=com.nianticlabs.pokemongo_0.437.0-2026110902_1arch_7b717b2c2f724a2e37e8f308e187da3f_apkmirror.com.apkm
-INPUT_SHA=5be1ff372d8a3aa1c9ce9f4014b3825119086feaf71aae6b0538636acafebdd3
-CERT_SHA=21d8ca27b314ccf2de4cdfab5f6365e75c2ef740ae445cbf9a26b28575414946
+source "$ROOT/scripts/build-config.env"
 
 allow_dirty=false
 case "${1:-}" in

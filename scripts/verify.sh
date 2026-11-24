@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CALLER="$PWD"
-CERT_SHA=21d8ca27b314ccf2de4cdfab5f6365e75c2ef740ae445cbf9a26b28575414946
+source "$ROOT/scripts/build-config.env"
 
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     printf 'Usage: %s [release-directory | PGRazor.apk]\nWithout an argument, verify the newest completed automated release by directory name.\n' "$0"
