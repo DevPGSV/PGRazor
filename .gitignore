@@ -54,3 +54,4 @@ signing.env
 !/.vscode/
 /.vscode/*
 !/.vscode/settings.json
+/AGENTS-doc/*
