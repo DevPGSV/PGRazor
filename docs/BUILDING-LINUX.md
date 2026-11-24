@@ -94,6 +94,38 @@ To independently verify the first manual release, if present:
 ./scripts/verify.sh ../dist/release/
 ```
 
+## Manual intermediate APK cleanup (Linux)
+
+`./scripts/clean.sh` previews the pruning plan; `./scripts/clean.sh --apply`
+actually deletes eligible direct APK replicas in `pgrazor/build/nonroot/`.
+It uses the shared build lock and a container without network or signing secrets.
+Do not run manual upstream build commands concurrently with cleanup.
+
+Create `../cache/nonroot-retention.json` with schema 1 and a nonempty
+`pinnedRuns` array. Each entry has a `run` (the exact existing non-root run
+name, not a path) and a nonempty `reason`. Keep important local builds pinned
+until replacement builds pass device tests. These pins are local to the Linux
+workflow and do not replace the upstream Windows `build-retention.json`.
+
+The default policy keeps the latest three checksum-verified complete runs per
+package/runtime ABI, all pinned runs, runs modified within 30 minutes, and
+unrecognized, incomplete or invalid runs. Missing or damaged pins stop cleanup.
+The optional flags `--keep-latest N` (3–100) and `--min-age-minutes N`
+(30–525600) increase the retention limits. Review the dry-run output before
+applying. JSON receipts are written to `pgrazor/build/cleanup/` even in dry-run.
+
+Reports, logs, nested directories, ART outputs, native caches, original APKM,
+keys and final releases are not deleted. Report paths must refer to the current
+`/workspace/pgrazor/build/nonroot/` container layout. The script rejects unsafe
+paths and checks file fingerprints again before deletion; the shared lock only
+coordinates the supplied wrappers, not unrelated external processes.
+
+Synthetic tests (no actual build files are touched):
+
+```bash
+docker compose run --rm --no-deps -T --pull never builder python -B scripts/test_clean.py -v
+```
+
 ## Updating upstream
 
 Review upstream changes to the supported game version, SDK/NDK requirements and
@@ -107,7 +139,8 @@ Do not replace the permanent key merely because the game version changes.
   and upgrade compatibility have not yet been validated.
 - Windows compatibility of the Linux portability changes remains untested.
 - The upstream non-root cleanup invokes PowerShell; its absence produces a
-  non-fatal warning. Intermediate builds can accumulate in `pgrazor/build/`.
+  non-fatal warning. Use the manual Linux cleanup for old non-root APK replicas;
+  ART and other intermediate outputs can still accumulate in `pgrazor/build/`.
 - The Docker image is not fully pinned by digest, and builds are not yet proven
   bit-for-bit reproducible. Record the image ID and source revision for diagnosis.
 - The release certificate establishes the signing identity, not the safety of
