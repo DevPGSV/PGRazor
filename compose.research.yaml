@@ -1,0 +1,41 @@
+name: pgrazor-research
+services:
+  analysis:
+    image: pgrazor-research:cpp2il21-jadx157
+    pull_policy: never
+    platform: linux/amd64
+    network_mode: none
+    read_only: true
+    user: "${RESEARCH_UID:?}:${RESEARCH_GID:?}"
+    init: true
+    environment:
+      JADX_CONFIG_DIR: /tmp/jadx-config
+      JADX_CACHE_DIR: /tmp/jadx-cache
+      JADX_TMP_DIR: /tmp/jadx-tmp
+      JAVA_TOOL_OPTIONS: -Duser.home=/tmp -Xmx2g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 4
+    mem_limit: 6g
+    memswap_limit: 6g
+    pids_limit: 192
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1536m,mode=1777
+    volumes:
+      - type: bind
+        source: ${RESEARCH_INPUT:?}
+        target: /input/game.apkm
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./scripts/research
+        target: /tools
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RESEARCH_OUTPUT:?}
+        target: /output
+        bind:
+          create_host_path: false
