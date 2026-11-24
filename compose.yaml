@@ -1,0 +1,45 @@
+
+name: pgrazor
+
+services:
+  builder:
+    image: pgrazor-builder:local
+
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+
+    platform: linux/amd64
+
+    user: "${PGRAZOR_UID:-1000}:${PGRAZOR_GID:-1000}"
+
+    working_dir: /workspace
+
+    init: true
+    stdin_open: true
+    tty: true
+
+    environment:
+      PGRAZOR_NATIVE_DEPS: /cache/native-deps
+
+    volumes:
+      # Source code
+      - .:/workspace
+
+      # Original game files (read-only)
+      - ../files:/input:ro
+
+      # Build output
+      - ../dist:/output
+
+      # Persistent dependency caches
+      - ../cache/native-deps:/cache/native-deps
+      - ../cache/artifacts:/workspace/.artifacts
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    command: /bin/bash

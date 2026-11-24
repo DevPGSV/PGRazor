@@ -43,3 +43,14 @@ Thumbs.db
 *.gpx
 !/pgrazor/research/README.txt
 /user-reports
+
+# DevPGSV development environment
+/secrets/
+/cache/
+signing.env
+*.local.env
+
+# Shared VS Code configuration
+!/.vscode/
+/.vscode/*
+!/.vscode/settings.json

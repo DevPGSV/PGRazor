@@ -1,0 +1,35 @@
+
+{
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.artifacts/**": true,
+        "**/.local/**": true,
+        "**/build/**": true,
+        "**/input/**": true,
+        "**/dist/**": true,
+        "**/cache/**": true,
+        "**/__pycache__/**": true,
+        "**/node_modules/**": true
+    },
+    "search.exclude": {
+        "**/.artifacts": true,
+        "**/.local": true,
+        "**/build": true,
+        "**/input": true,
+        "**/dist": true,
+        "**/cache": true,
+        "**/__pycache__": true,
+        "**/node_modules": true,
+        "**/*.apk": true,
+        "**/*.apkm": true,
+        "**/*.apks": true,
+        "**/*.jks": true
+    },
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true
+    },
+    "files.eol": "\n",
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true
+}
