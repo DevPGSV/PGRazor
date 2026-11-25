@@ -7,39 +7,26 @@ import json
 import runpy
 import sys
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-MAX_BYTES = 8192
+from research_sdk import Client, ResearchError
 
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
 
 def run(base, catalog, token):
     export = runpy.run_path(str(Path(__file__).with_name("export-api-declarations.py")))
     expected = export["declarations"](catalog)
-    client = build_opener(ProxyHandler({}), NoRedirect())
+    client = Client(base, token)
 
-    def get(route):
-        request = Request(base + "/research/v1/" + route, headers={"Authorization": "Bearer " + token})
-        with client.open(request, timeout=5) as response:
-            body = response.read(MAX_BYTES + 1)
-            if len(body) > MAX_BYTES:
-                raise ValueError("Response exceeded the limit")
-            return json.loads(body)
-
-    get("status")  # Verify authentication; omit the generation from the report.
-    caps = get("capabilities")
-    assemblies = get("assemblies?limit=12")
-    runtime = get("runtime")
-    diagnostics = get("diagnostics")
-    contracts = get("contracts")
+    client.status()  # Verify authentication; omit the generation from the report.
+    caps = client.capabilities()
+    assemblies = client.static_assemblies()
+    runtime = client.runtime()
+    diagnostics = client.diagnostics()
+    contracts = client.contracts()
     listed = []
     offset = 0
     for _ in range(12):
-        page = get(f"types?offset={offset}&limit=3")
+        page = client.offline_types(offset=offset, limit=3)
         listed.extend(item["id"] for item in page["items"])
         next_offset = page["next_offset"]
         if next_offset is None:
@@ -48,8 +35,8 @@ def run(base, catalog, token):
             raise ValueError("Invalid pagination")
         offset = next_offset
     expected_ids = [row["id"] for row in expected]
-    comparisons = {row["id"]: get("type?id=" + row["id"]) == row for row in expected}
-    evidence = get("validate?contract=trainer.stats.v1")
+    comparisons = {row["id"]: client.offline_type(row["id"]) == row for row in expected}
+    evidence = client.validate_contract("trainer.stats.v1")
     trainer = next(row for row in expected if row["id"] == "PlayerStatsProto")
     static_fields = {field["name"]: field["type"] for field in trainer["fields"]}
     compatibility = {}
@@ -91,10 +78,9 @@ def main():
         result = run(f"http://{base.hostname}:{base.port}", args.catalog, token)
         print(json.dumps(result).replace(token, "[redacted]"))
         return 0 if result["ok"] else 1
-    except HTTPError as failure:
-        print(json.dumps({"ok": False, "http_status": failure.code,
-                          "error": "Endpoint rejected the request"}))
-    except (OSError, URLError, ValueError, TypeError, KeyError):
+    except ResearchError as failure:
+        print(json.dumps({"ok": False, "http_status": failure.status, "error": str(failure)}))
+    except (OSError, ValueError, TypeError, KeyError):
         print(json.dumps({"ok": False, "error": "Invalid or unavailable API or local catalog"}))
     return 1
 
