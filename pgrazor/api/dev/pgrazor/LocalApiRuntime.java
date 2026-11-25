@@ -13,7 +13,7 @@ final class LocalApiRuntime {
     static synchronized void init(Application app) {
         if (controller != null) return;
         data = new LocalApiData(SystemClock::elapsedRealtime, System::currentTimeMillis);
-        extension = LocalApiExtensionFactory.create(data::eventEpoch);
+        extension = LocalApiExtensionFactory.create(app, data);
         controller = new LocalApiController(new LocalApiStore(app), data, extension);
         settings = new LocalApiSettingsModel(controller);
     }
@@ -29,7 +29,10 @@ final class LocalApiRuntime {
 
     static void accountObserved(String id, boolean verified) {
         LocalApiData current = data;
-        if (current != null) current.seeIdentity(id, verified);
+        if (current != null) {
+            if (verified && extension != null) extension.accountVerified(id);
+            current.seeIdentity(id, verified);
+        }
     }
 
     static void identityLost() {

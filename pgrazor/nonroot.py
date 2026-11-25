@@ -23,6 +23,7 @@ import zipfile
 import axml
 import build
 import runtime_assets
+from native_receipts import verify_cores
 import script_bundle
 
 ROOT=Path(__file__).resolve().parent
@@ -262,7 +263,8 @@ def package(source, *,research_api=False,research_runtime=False,panel_only=False
     if native_pilot:
         import native_build
         with scoped_env(PGRAZOR_NATIVE_PILOT='1'):
-            native_outputs = native_build.build_all(ROOT, abis, download=download)
+            native_outputs = native_build.build_all(ROOT, abis, download=download, **({"research_discovery": True} if research_api else {}))
+        native_receipts = native_build.selected_receipts(ROOT, native_outputs, abis, research_api)
         for abi, binary in native_outputs.items():
             assets[f'assets/pgrazor/{abi}/libpgrazor-core.so'] = binary
         assets['assets/pgrazor/native-notices/Dobby-LICENSE'] = native_build.ensure_dobby(ROOT)/'LICENSE'
@@ -330,14 +332,14 @@ def package(source, *,research_api=False,research_runtime=False,panel_only=False
     if compiled_gameplay:
         assets.update(build.netty_notices())
         assert_no_research_payload(assets)
-    report={'features':{'production_api':compiled_gameplay,'websocket':compiled_gameplay,'research_api':research_api},'input':str(source.resolve()),'input_sha256':runtime_assets.sha256(source),'package':package_name,
+    report={'features':{'production_api':compiled_gameplay,'websocket':compiled_gameplay,'research_api':research_api,'research_discovery':research_api},'input':str(source.resolve()),'input_sha256':runtime_assets.sha256(source),'package':package_name,
         'mode':'compiled-gameplay' if compiled_gameplay else ('panel-only' if panel_only else 'research-runtime'),'original_abis':sorted(native_abis),'runtime_abi':game_runtime_abi if not preview else probe_abi,'runtime_abis':abis,
         'game_acceptance':'UNTESTED','local_http_api':compiled_gameplay,'runtime':runtimes,'outputs':[], 'input_certificate_sha256':certificates[0],
         'installation':'Not installed. Signed with local development key; cannot update a differently signed installation.'}
     if native_pilot:
         report['native_pilot'] = {
             'selftest_requested': mode.get('nativeSelftest', False),
-            'libraries': {abi: json.loads((ROOT/'build/native/out'/abi/'receipt.json').read_text(encoding='utf-8')) for abi in abis},
+            'libraries': native_receipts,
             'gameplay_validation': 'UNTESTED',
         }
     if art_provenance is not None: report['compiled_location_getters'] = art_provenance
@@ -387,6 +389,7 @@ def package(source, *,research_api=False,research_runtime=False,panel_only=False
         command(build.android_tool('zipalign'),'-c','-P','16','4',signed)
         with zipfile.ZipFile(signed) as archive:
             if compiled_gameplay: assert_no_research_payload(archive.namelist())
+            if path == base and native_pilot: verify_cores(archive, report)
             parsed=axml.inspect_manifest(archive.read('AndroidManifest.xml'))
             if path==base and not any(p['name']==axml.PROVIDER and p['exported'] is False for p in parsed['providers']): raise RuntimeError('Packaged provider verification failed')
         report['outputs'].append({'file':str(signed),'sha256':runtime_assets.sha256(signed),'split':info['split']})

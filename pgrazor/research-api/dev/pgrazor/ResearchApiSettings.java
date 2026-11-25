@@ -40,11 +40,11 @@ final class ResearchApiSettings implements LocalApiExtension.Page {
         title.setTag(SettingsUi.TAG_SEARCH_ROW, "Research API");
         note(parent, "HTTP and WebSocket are plaintext. Use only on a trusted private LAN.");
         enabled = new Switch(activity);
-        enabled.setText("Enable Research API and generate token");
+        enabled.setText("Enable Research API");
         parent.addView(enabled);
         enabled.setOnCheckedChangeListener((v, checked) -> {
             if (painting) return;
-            if (checked) session.issue(MINUTES[selected]);
+            if (checked) session.activate(MINUTES[selected]);
             else session.revoke();
             refresh(bases);
         });
@@ -81,11 +81,12 @@ final class ResearchApiSettings implements LocalApiExtension.Page {
         reveal.setEnabled(active != null);
         copy.setEnabled(active != null);
         rotate.setEnabled(active != null);
-        revoke.setEnabled(active != null);
+        revoke.setEnabled(running);
         set(reveal, revealed ? "Hide Research token" : "Reveal Research token");
         set(secret, active != null && revealed ? active.token : "••••••••••••••••");
         long remaining = session.remaining(active);
         String label = running ? "Disabled · No active token" : "Disabled · Start HTTP API first";
+        if (session.storageFailed()) label = "Disabled · Could not access private token storage";
         if (active != null) {
             long seconds = (remaining + 999) / 1000;
             label = "Active · " + seconds / 60 + " min " + seconds % 60 + " s remaining · Expires around "

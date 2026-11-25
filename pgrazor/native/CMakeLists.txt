@@ -170,6 +170,12 @@ add_library(pgrazor_core SHARED
   jni_core.cpp)
 
 target_sources(pgrazor_core PRIVATE events/event_collector.cpp)
+option(PGRAZOR_RESEARCH_DISCOVERY "Include optional runtime structure discovery" OFF)
+if(PGRAZOR_RESEARCH_DISCOVERY)
+  target_sources(pgrazor_core PRIVATE research-discovery/discovery.cpp)
+  target_compile_definitions(pgrazor_core PRIVATE PGRAZOR_RESEARCH_DISCOVERY=1)
+  target_link_libraries(pgrazor_core PRIVATE dl)
+endif()
 set_source_files_properties(events/event_collector.cpp evolve_transfer.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
 set_source_files_properties(auto_raid.cpp gift_batch.cpp research.cpp session_stats.cpp route_gift.cpp storage_iv.cpp iv_panel.cpp ar_values.cpp catch_chance.cpp cutscene_skip.cpp rocket_swap.cpp smart_battle.cpp max_orbs.cpp heal.cpp shundo.cpp shiny_scan.cpp battery.cpp remote_gym.cpp incense_guard.cpp batch_evolution.cpp gym_runtime.cpp gym_repeat.cpp buddy_emotion.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
 

@@ -64,12 +64,26 @@ class CompiledGameplayPackageTests(unittest.TestCase):
                 archive.writestr('AndroidManifest.xml', b'manifest')
                 archive.writestr('classes.dex', b'original-game-dex')
             # Inert native core compilation outputs plus the bundled Dobby license.
-            native_outputs = {}
-            for abi in ('arm64-v8a', 'x86_64'):
-                native_dir = work / 'build/native/out' / abi; native_dir.mkdir(parents=True)
-                binary = native_dir / 'libpgrazor-core.so'; binary.write_bytes(('native fixture ' + abi).encode())
-                (native_dir / 'receipt.json').write_text(json.dumps({'abi': abi, 'fixture': True}))
-                native_outputs[abi] = binary
+            native_source = work / 'native'
+            native_source.mkdir()
+            (native_source / 'CMakeLists.txt').write_text('fixture')
+            fingerprint = native_build.source_fingerprint(native_source)
+            variants = {}
+            for research in (False, True):
+                native_outputs = {}
+                for abi in ('arm64-v8a', 'x86_64'):
+                    variant = 'native-research' if research else 'native'
+                    native_dir = work / 'build' / variant / 'out' / abi
+                    native_dir.mkdir(parents=True)
+                    binary = native_dir / 'libpgrazor-core.so'
+                    payload = ('native fixture ' + abi).encode()
+                    binary.write_bytes(payload + (b'dev/pgrazor/ResearchDiscoveryNative' if research else b''))
+                    (native_dir / 'receipt.json').write_text(json.dumps({
+                        'abi': abi, 'soname': binary.name, 'research_discovery': research,
+                        'source_fingerprint': fingerprint, 'stripped_sha256': runtime_assets.sha256(binary),
+                    }))
+                    native_outputs[abi] = binary
+                variants[research] = native_outputs
             dobby = work / 'dobby-fixture'; dobby.mkdir(); (dobby / 'LICENSE').write_text('Dobby fixture license')
             # Inert compiled Location ART outputs, receipt and the five dependency licenses.
             art_session = work / 'build/art/fixture-session'; art_outputs = {}; art_abis = {}
@@ -99,8 +113,10 @@ class CompiledGameplayPackageTests(unittest.TestCase):
             original_hash = runtime_assets.sha256(source)
             def compile_native_fixture(*args, **kwargs):
                 self.assertEqual(os.environ.get('PGRAZOR_NATIVE_PILOT'), '1')
-                return native_outputs
-            for options in ({}, {'interaction_probe': True}):
+                return variants[kwargs.get('research_discovery', False)]
+            for options in ({}, {'interaction_probe': True}, {'research_api': True}):
+                research = options.get('research_api', False)
+                native_outputs = variants[research]
                 with self.subTest(options=options), \
                      patch.dict(os.environ, {key:'0' for key in ('PGRAZOR_COMPILED_GAMEPLAY','PGRAZOR_NATIVE_PILOT','PGRAZOR_COMPILED_LOCATION','PGRAZOR_COMPILED_JAVA_BRIDGES','PGRAZOR_COMPILED_NATIVE_TRANSPORT')}), \
                      patch.object(nonroot, 'ROOT', work), patch.object(nonroot, 'validated_build', return_value=dex), \
@@ -123,7 +139,11 @@ class CompiledGameplayPackageTests(unittest.TestCase):
                 for omitted in ('bridge_sha256', 'bridge_upstream_patch', 'agent_sha256', 'script_bundles', 'diagnostics'):
                     self.assertNotIn(omitted, report)
                 self.assertEqual(report['runtime'], [])
-                self.assertIn('native_pilot', report)
+                self.assertIs(report['features']['research_discovery'], research)
+                for abi, binary in native_outputs.items():
+                    receipt = report['native_pilot']['libraries'][abi]
+                    self.assertEqual(receipt, json.loads(binary.with_name('receipt.json').read_text()))
+                    self.assertEqual(receipt['stripped_sha256'], runtime_assets.sha256(binary))
                 self.assertIn('compiled_location_getters', report)
                 self.assertIn('compiled_java_bridges', report)
 

@@ -4,6 +4,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ResearchApiTest {
     private static final String EVENTS = "/research/v1/events";
@@ -11,10 +12,14 @@ public final class ResearchApiTest {
     private static final String PROD = "fixture-production";
 
     public static void main(String[] args) throws Exception {
+        persistence();
+        discovery();
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
         ResearchApiSession session = new ResearchApiSession(clock::get, data::eventEpoch);
-        ResearchApi module = new ResearchApi(session);
+        LocalApiData metadata = new LocalApiData(clock::get, clock::get);
+        metadata.enable();
+        ResearchApi module = new ResearchApi(session, metadata);
         session.issue(30);
         check(session.current() == null && !session.listener());
 
@@ -34,6 +39,37 @@ public final class ResearchApiTest {
             ResearchApiSession.Lease initial = session.current();
             check(initial != null && session.remaining(initial) == 1_800_000);
             check(request(port, STATUS, initial.token).contains("\"ready\":true"));
+            check(request(port, "/research/v1/runtime", initial.token).contains("account_unavailable"));
+            check(new ResearchMetadata(null).get("runtime").body.contains("runtime_unavailable"));
+            check(request(port, "/research/v1/assemblies", initial.token).contains("holo-protos.dll"));
+            check(request(port, "/research/v1/types?limit=1", initial.token).contains("\"next_offset\":1"));
+            check(request(port, "/research/v1/types?offset=100", initial.token).contains("\"items\":[]"));
+            check(request(port, "/research/v1/types?limit=2&limit=2", initial.token).startsWith("HTTP/1.1 400"));
+            check(request(port, "/research/v1/types?limit=13", initial.token).startsWith("HTTP/1.1 400"));
+            check(request(port, "/research/v1/type?id=Missing", initial.token).startsWith("HTTP/1.1 404"));
+            check(request(port, "/research/v1/type?id=PlayerStatsProto", initial.token).contains("NumEggsHatched"));
+            check(request(port, "/research/v1/contracts", initial.token).contains("trainer.stats.v1"));
+            check(request(port, "/research/v1/validate?contract=missing", initial.token).startsWith("HTTP/1.1 404"));
+            String validation = "/research/v1/validate?contract=trainer.stats.v1";
+            check(request(port, validation, initial.token).contains("\"compatible\":null"));
+            metadata.seeIdentity("acct", true);
+            clock.incrementAndGet();
+            check(LocalApiTrainer.accept(metadata, "101|0061006300630074|0050"));
+            check(request(port, validation, initial.token).contains("inconclusive"));
+            clock.incrementAndGet();
+            check(LocalApiTrainer.accept(metadata, "102|0061006300630074|0050|10|0|0|0|0|0"));
+            check(request(port, validation, initial.token).contains("\"runtime_metadata_observed\":true"));
+            java.util.concurrent.ExecutorService readers = java.util.concurrent.Executors.newFixedThreadPool(3);
+            try {
+                java.util.List<java.util.concurrent.Future<String>> responses = new java.util.ArrayList<>();
+                for (int index = 0; index < 6; index++)
+                    responses.add(readers.submit(() -> request(port, validation, initial.token)));
+                for (java.util.concurrent.Future<String> response : responses)
+                    check(response.get().contains("\"provider_observed\":true"));
+            } finally {
+                readers.shutdownNow();
+            }
+
             String capabilities = request(port, "/research/v1/capabilities", initial.token);
             check(capabilities.contains("\"research_api\":true") && !capabilities.contains(initial.token));
             check(request(port, "/api/v1/status", initial.token).startsWith("HTTP/1.1 401"));
@@ -49,10 +85,13 @@ public final class ResearchApiTest {
                 check(production.response.startsWith("HTTP/1.1 101") && production.text().contains("hello"));
                 check(research.response.startsWith("HTTP/1.1 101") && research.text().contains(initial.id));
                 research.command("{\"version\":1,\"id\":\"d\",\"op\":\"discover\"}");
-                check(research.text().contains("\"topics\":[\"research.status\"]"));
-                research.command("{\"version\":1,\"id\":\"s\",\"op\":\"subscribe\",\"topics\":[\"research.status\"]}");
+                check(research.text().contains("\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]"));
+                research.command("{\"version\":1,\"id\":\"s\",\"op\":\"subscribe\",\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]}");
                 check(research.text().contains("\"type\":\"ack\""));
-                check(research.text().contains("\"initial\":true"));
+                for (String topic : new String[]{"research.status", "research.diagnostics", "research.jobs"}) {
+                    String event = research.text();
+                    check(event.contains("\"initial\":true") && event.contains("\"topic\":\"" + topic + "\""));
+                }
                 session.rotate(initial, 15);
                 ResearchApiSession.Lease rotated = session.current();
                 check(rotated != initial && !rotated.token.equals(initial.token));
@@ -105,6 +144,125 @@ public final class ResearchApiTest {
         }
         check(!module.owns("/api/v1/status") && module.authenticate(Collections.emptyList()) == null);
         System.out.println("PASS: Research API build seam, separate realms, lifecycle, monotonic expiry and subscriptions");
+    }
+
+    private static void discovery() throws Exception {
+        AtomicLong now = new AtomicLong(100);
+        java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        AtomicBoolean valid = new AtomicBoolean(true);
+        ResearchDiscovery discovery = new ResearchDiscovery(now::get, query -> {
+            if (query.name.equals("FixtureHeld")) {
+                started.countDown();
+                try { release.await(); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            }
+            return "{\"availability\":\"unavailable\",\"provenance\":\"il2cpp_runtime\"}";
+        });
+        ResearchApiSession session = new ResearchApiSession(now::get, () -> 0);
+        session.listenerChanged(true);
+        session.issue(30);
+        String token = session.current().token;
+        String auth = "Authorization: Bearer " + token + "\r\n";
+        ResearchApi module = new ResearchApi(session, null, discovery);
+        try (LocalApiServer server = LocalApiServer.start(new InetSocketAddress("127.0.0.1", 0), PROD,
+                LocalApiRoutes.production(new LocalApiData(now::get, now::get)), valid::get, module)) {
+            int port = server.port();
+            String start = "/research/v1/live/discover?op=search&name=";
+            check(HttpPreviewServerTest.request(port, "POST", start + "FixtureHeld", "")
+                .startsWith("HTTP/1.1 401"));
+            check(HttpPreviewServerTest.request(port, "POST", start + "FixtureHeld&limit=21", auth)
+                .startsWith("HTTP/1.1 400"));
+            String result = HttpPreviewServerTest.request(port, "POST", start + "FixtureHeld", auth);
+            check(result.startsWith("HTTP/1.1 202"));
+            String id = result.split("\"id\":\"")[1].split("\"")[0];
+            check(started.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            check(request(port, "/research/v1/live/job?id=" + id, token).contains("running"));
+            String queued = HttpPreviewServerTest.request(port, "POST", start + "FixtureLater", auth);
+            String later = queued.split("\"id\":\"")[1].split("\"")[0];
+            check(queued.contains("queued"));
+            now.addAndGet(2501);
+            check(request(port, "/research/v1/live/job?id=" + later, token).contains("job_deadline"));
+            String pending = HttpPreviewServerTest.request(port, "POST", start + "FixtureOther", auth);
+            String other = pending.split("\"id\":\"")[1].split("\"")[0];
+            check(HttpPreviewServerTest.request(port, "POST", "/research/v1/live/cancel?id=" + other, auth)
+                .contains("cancelled_by_client"));
+            check(discovery.topic(session.current().id).contains("cancelled"));
+            session.revoke();
+            check(discovery.topic("unknown").equals("{\"jobs\":[]}"));
+            check(request(port, "/research/v1/live/job?id=" + id, token).startsWith("HTTP/1.1 401"));
+            session.issue(30);
+            String rotated = session.current().token;
+            check(request(port, "/research/v1/live/job?id=" + id, rotated).startsWith("HTTP/1.1 404"));
+            release.countDown();
+            String next = HttpPreviewServerTest.request(port, "POST", start + "FixtureNew",
+                "Authorization: Bearer " + rotated + "\r\n");
+            String fresh = next.split("\"id\":\"")[1].split("\"")[0];
+            String observation = "";
+            for (int retry = 0; retry < 20 && !observation.contains("completed"); retry++) {
+                observation = request(port, "/research/v1/live/job?id=" + fresh, rotated);
+                if (!observation.contains("completed")) Thread.sleep(10);
+            }
+            check(observation.contains("completed") && observation.contains("il2cpp_runtime"));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    private static void persistence() throws Exception {
+        AtomicLong clock = new AtomicLong(100);
+        class Store implements ResearchApiSession.Store {
+            ResearchApiSession.Saved saved;
+            boolean corrupt;
+            public ResearchApiSession.Saved load() throws java.io.IOException {
+                if (corrupt) throw new java.io.IOException();
+                return saved;
+            }
+            public void save(ResearchApiSession.Saved value) { saved = value; corrupt = false; }
+        }
+        Store store = new Store();
+        ResearchApiSession first = new ResearchApiSession(clock::get, () -> 0, store, 7);
+        first.listenerChanged(true);
+        first.activate(15);
+        ResearchApiSession.Lease initial = first.current();
+        check(initial != null && initial.deadline == 900100);
+        clock.set(501);
+        ResearchApiSession restarted = new ResearchApiSession(clock::get, () -> 0, store, 7);
+        check(restarted.current() == null);
+        restarted.listenerChanged(true);
+        restarted.activate(60);
+        check(restarted.current().token.equals(initial.token) && restarted.current().deadline == initial.deadline);
+        restarted.accountVerified("account");
+        check(restarted.current().token.equals(initial.token));
+        restarted.rotate(restarted.current(), 15);
+        check(!restarted.current().token.equals(initial.token));
+        restarted.accountVerified("changed");
+        check(store.saved == null && restarted.current() == null);
+        restarted.activate(15);
+        String old = restarted.current().token;
+        clock.set(restarted.current().deadline);
+        ResearchApiSession expired = new ResearchApiSession(clock::get, () -> 0, store, 7);
+        expired.listenerChanged(true);
+        expired.activate(15);
+        check(!expired.current().token.equals(old));
+        String sameBoot = expired.current().token;
+        ResearchApiSession reboot = new ResearchApiSession(clock::get, () -> 0, store, 8);
+        reboot.listenerChanged(true);
+        reboot.activate(15);
+        check(!reboot.current().token.equals(sameBoot));
+        String beforeRegression = reboot.current().token;
+        clock.decrementAndGet();
+        ResearchApiSession backwards = new ResearchApiSession(clock::get, () -> 0, store, 8);
+        backwards.listenerChanged(true);
+        backwards.activate(15);
+        check(!backwards.current().token.equals(beforeRegression));
+        backwards.listenerChanged(false);
+        check(store.saved == null);
+        store.corrupt = true;
+        ResearchApiSession corrupt = new ResearchApiSession(clock::get, () -> 0, store, 8);
+        corrupt.listenerChanged(true);
+        corrupt.activate(15);
+        check(corrupt.current() == null && corrupt.storageFailed());
     }
 
     private static String request(int port, String path, String token) throws Exception {

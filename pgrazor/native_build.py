@@ -423,7 +423,7 @@ def _copy_dobby_license(dobby_dir, out_dir):
 
 
 def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
-              cmake=None, ninja=None):
+              cmake=None, ninja=None, research_discovery=False):
     """Configure, build, strip and validate one ABI; return the stripped Path."""
     if abi not in ELF_MACHINE:
         raise RuntimeError('Unsupported ABI: ' + abi)
@@ -440,7 +440,7 @@ def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
     if dobby_dir is None:
         dobby_dir = ensure_dobby(root, download=download)
 
-    native_build = root / 'build' / 'native'
+    native_build = root / 'build' / ('native-research' if research_discovery else 'native')
     build_dir = native_build / 'build' / abi
     out_dir = native_build / 'out' / abi
     unstripped_dir = out_dir / 'unstripped'
@@ -451,6 +451,7 @@ def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
     if not toolchain.is_file():
         raise RuntimeError('NDK CMake toolchain not found: ' + str(toolchain))
 
+    fingerprint = source_fingerprint(source)
     _run([cmake, '-S', source, '-B', build_dir, '-G', 'Ninja',
           '-DCMAKE_MAKE_PROGRAM=' + str(ninja),
           '-DCMAKE_TOOLCHAIN_FILE=' + str(toolchain),
@@ -458,7 +459,8 @@ def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
           '-DANDROID_PLATFORM=android-' + str(API_LEVEL),
           '-DANDROID_STL=' + ANDROID_STL,
           '-DCMAKE_BUILD_TYPE=Release',
-          '-DDOBBY_SOURCE_DIR=' + str(dobby_dir)])
+          '-DDOBBY_SOURCE_DIR=' + str(dobby_dir),
+          '-DPGRAZOR_RESEARCH_DISCOVERY=' + ('ON' if research_discovery else 'OFF')])
     _run([cmake, '--build', build_dir, '--target', TARGET])
 
     built = _locate_built_library(build_dir)
@@ -472,7 +474,10 @@ def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
     validate_library(output, abi, ndk)
     _copy_dobby_license(dobby_dir, out_dir)
 
+    if fingerprint != source_fingerprint(source):
+        raise RuntimeError('Native sources changed during compilation')
     receipt = {
+        'research_discovery': research_discovery,
         'abi': abi,
         'soname': OUTPUT_SONAME,
         'ndk_version': ndk_version,
@@ -480,13 +485,34 @@ def build_one(root, abi, download=False, ndk=None, dobby_dir=None,
         'android_stl': ANDROID_STL,
         'dobby_commit': DOBBY_COMMIT,
         'dobby_sha256': DOBBY_SHA256,
-        'source_fingerprint': source_fingerprint(source),
+        'source_fingerprint': fingerprint,
         'unstripped_sha256': sha256(unstripped),
         'stripped_sha256': sha256(output),
         'exports': sorted(EXPECTED_EXPORTS),
     }
     (out_dir / 'receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
     return output
+
+
+def selected_receipts(root, outputs, abis, research_discovery):
+    """Join receipts to the exact selected outputs and check current inputs before packaging."""
+    if set(outputs) != set(abis):
+        raise RuntimeError('Native build returned unexpected ABI outputs')
+    variant = 'native-research' if research_discovery else 'native'
+    fingerprint = source_fingerprint(native_source_root(root))
+    receipts = {}
+    for abi, binary in outputs.items():
+        directory = Path(root) / 'build' / variant / 'out' / abi
+        if binary.resolve() != (directory / OUTPUT_SONAME).resolve():
+            raise RuntimeError('Native output does not belong to the selected build variant: ' + abi)
+        receipt = json.loads(binary.with_name('receipt.json').read_text(encoding='utf-8'))
+        if (receipt.get('abi') != abi or receipt.get('soname') != OUTPUT_SONAME
+                or receipt.get('research_discovery') is not research_discovery
+                or receipt.get('source_fingerprint') != fingerprint
+                or receipt.get('stripped_sha256') != sha256(binary)):
+            raise RuntimeError('Native build output does not match its receipt: ' + abi)
+        receipts[abi] = receipt
+    return receipts
 
 
 def _locate_built_library(build_dir):
@@ -498,7 +524,7 @@ def _locate_built_library(build_dir):
     return matches[0]
 
 
-def build_all(root, abis=DEFAULT_ABIS, download=False):
+def build_all(root, abis=DEFAULT_ABIS, download=False, research_discovery=False):
     """Build every requested ABI; return {abi: Path to stripped .so}.
 
     Opt-in: requires PGRAZOR_NATIVE_PILOT=1. Shared NDK/CMake/Ninja/Dobby
@@ -524,7 +550,7 @@ def build_all(root, abis=DEFAULT_ABIS, download=False):
     for abi in abis:
         results[abi] = build_one(
             root, abi, download=download, ndk=ndk, dobby_dir=dobby_dir,
-            cmake=cmake, ninja=ninja)
+            cmake=cmake, ninja=ninja, research_discovery=research_discovery)
     return results
 
 

@@ -11,6 +11,10 @@
 #include "runtime_bootstrap.h"
 #include "runtime_host.h"
 
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+int pgrazor_register_research_discovery(JNIEnv *);
+#endif
+
 namespace {
 
 jint JNICALL jni_api_version(JNIEnv *, jclass) {
@@ -76,5 +80,8 @@ jint JNI_OnLoad(JavaVM *vm, void *) {
 
     env->DeleteLocalRef(clazz);
     if(pgrazor_register_runtime_transport(env)!=0)return JNI_ERR;
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+    if(pgrazor_register_research_discovery(env)!=0)return JNI_ERR;
+#endif
     return JNI_VERSION_1_6;
 }

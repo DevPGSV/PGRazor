@@ -179,9 +179,9 @@ def compile_controls(variant, jars, research_api=False):
     sources = sorted((ROOT/'src').rglob('*.java')) + sorted((ROOT/variant).rglob('*.java'))
     if variant == 'api':
         factory = classes/'LocalApiExtensionFactory.java'
-        implementation = 'new ResearchApi(epoch)' if research_api else 'null'
+        implementation = 'new ResearchApi(app, data)' if research_api else 'null'
         factory.write_text('package dev.pgrazor; final class LocalApiExtensionFactory {'
-                           'static LocalApiExtension create(java.util.function.LongSupplier epoch) {'
+                           'static LocalApiExtension create(android.app.Application app, LocalApiData data) {'
                            f'return {implementation};' + '}}', encoding='utf-8')
         sources.append(factory)
         if research_api:

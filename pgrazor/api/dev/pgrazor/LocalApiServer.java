@@ -172,11 +172,12 @@ final class LocalApiServer implements AutoCloseable {
                 send(ctx, null, HttpResponseStatus.UNAUTHORIZED, "{\"error\":\"UNAUTHORIZED\"}", null);
                 return;
             }
-            if (!HttpMethod.GET.equals(request.method())) {
+            boolean post = access != null && HttpMethod.POST.equals(request.method()) && access.acceptsPost(uri);
+            if (!post && !HttpMethod.GET.equals(request.method())) {
                 send(ctx, null, HttpResponseStatus.METHOD_NOT_ALLOWED, "{\"error\":\"METHOD_NOT_ALLOWED\"}", access);
                 return;
             }
-            LocalApiWebSocket.Feed feed = optional ? access.events(uri)
+            LocalApiWebSocket.Feed feed = optional ? (post ? null : access.events(uri))
                 : LocalApiRoutes.EVENTS_PATH.equals(uri) ? routes.events : null;
             if (feed != null) {
                 BooleanSupplier lease = () -> valid.getAsBoolean() && (access == null || access.valid());
@@ -188,7 +189,7 @@ final class LocalApiServer implements AutoCloseable {
                 if (status != null) send(ctx, null, status, "{\"error\":\"WEBSOCKET_UPGRADE_REJECTED\"}", access);
                 return;
             }
-            LocalApiRoutes.Reply reply = optional ? access.get(uri) : routes.get(uri);
+            LocalApiRoutes.Reply reply = optional ? (post ? access.post(uri) : access.get(uri)) : routes.get(uri);
             send(ctx, reply, HttpResponseStatus.valueOf(reply.code), reply.body, access);
         }
 

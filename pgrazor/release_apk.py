@@ -13,6 +13,7 @@ import zipfile
 import axml
 import build
 import nonroot
+from native_receipts import verify_cores
 import runtime_assets
 
 
@@ -120,8 +121,10 @@ def release(run, destination):
     nonroot.command(build.android_tool('apksigner'), 'sign', *build.signing_args(), '--out', signed, aligned)
     nonroot.command(build.android_tool('apksigner'), 'verify', signed)
     nonroot.command(build.android_tool('zipalign'), '-c', '-P', '16', '4', signed)
+    with zipfile.ZipFile(signed) as archive:
+        fingerprint = verify_cores(archive, report)
     (destination/'SHA256SUMS.txt').write_text(runtime_assets.sha256(signed)+'  PGRazor.apk\n', encoding='utf8')
-    (destination/'build-info.json').write_text(json.dumps({'game_version':game_version,'game_version_code':game_code,'architecture':'arm64-v8a','hook_runtime_architectures':report.get('runtime_abis',[report.get('runtime_abi','arm64-v8a')]),'input_sha256':report['input_sha256'],'apk_sha256':runtime_assets.sha256(signed),'source_commit':os.environ.get('GITHUB_SHA'),'device_tested':False,'features':report.get('features',{})},indent=2)+'\n',encoding='utf8')
+    (destination/'build-info.json').write_text(json.dumps({'game_version':game_version,'game_version_code':game_code,'architecture':'arm64-v8a','hook_runtime_architectures':report.get('runtime_abis',[report.get('runtime_abi','arm64-v8a')]),'input_sha256':report['input_sha256'],'apk_sha256':runtime_assets.sha256(signed),'source_commit':os.environ.get('GITHUB_SHA'),'device_tested':False,'features':report.get('features',{}), 'report_sha256':runtime_assets.sha256(run/'report.json'), 'native_source_fingerprint':fingerprint},indent=2)+'\n',encoding='utf8')
     unsigned.unlink(); aligned.unlink()
     print('Release candidate:', signed)
     return signed

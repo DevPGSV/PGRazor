@@ -120,9 +120,10 @@ expected = {
     'architecture': 'arm64-v8a',
     'input_sha256': input_sha,
     'apk_sha256': apk_sha,
+    'report_sha256': hashlib.sha256((out / 'report.json').read_bytes()).hexdigest(),
     'source_commit': os.environ['GITHUB_SHA'],
     'device_tested': False,
-    'features': {'production_api': True, 'websocket': True, 'research_api': research_api == 'true'},
+    'features': {'production_api': True, 'websocket': True, 'research_api': research_api == 'true', 'research_discovery': research_api == 'true'},
 }
 for key, value in expected.items():
     if info.get(key) != value:
