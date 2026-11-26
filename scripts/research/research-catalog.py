@@ -22,6 +22,16 @@ def main():
     search = actions.add_parser("search")
     search.add_argument("text")
     search.add_argument("--limit", type=int, default=30)
+    members = actions.add_parser("members")
+    for key in ("assembly", "namespace", "owner", "name", "kind", "value_type", "returns", "parameter"):
+        members.add_argument("--" + key.replace("_", "-"))
+    relationships = actions.add_parser("relationships")
+    relationships.add_argument("target")
+    relationships.add_argument("--relation", choices=("reference", "inherits", "implements"), default="reference")
+    for action in (members, relationships):
+        action.add_argument("--source", choices=("static", "runtime"), default="static")
+        action.add_argument("--offset", type=int, default=0)
+        action.add_argument("--limit", type=int, default=50)
     report = actions.add_parser("summary")
     report.add_argument("--limit", type=int, default=100)
     compare = actions.add_parser("compare")
@@ -51,6 +61,13 @@ def main():
                                                              Job.parse(record["job"]), version=args.version)}
             elif args.action == "search":
                 result = catalog.search(args.text, version=args.version, limit=args.limit)
+            elif args.action == "members":
+                filters = ("assembly", "namespace", "owner", "name", "kind", "value_type", "returns", "parameter")
+                result = catalog.members(version=args.version, source=args.source, limit=args.limit,
+                                         offset=args.offset, **{key: getattr(args, key) for key in filters})
+            elif args.action == "relationships":
+                result = catalog.relationships(args.target, version=args.version, relation=args.relation,
+                                               source=args.source, limit=args.limit, offset=args.offset)
             elif args.action == "summary":
                 result = catalog.summary(version=args.version, limit=args.limit)
             elif args.action == "compare":

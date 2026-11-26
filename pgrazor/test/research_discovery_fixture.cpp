@@ -91,12 +91,17 @@ const void *pgrazor_runtime_bootstrap_api(uint32_t) {
 }
 
 int main() {
+    assert(reviewedBreadType("Holoholo.Proto.Shared.Bread", "BreadMoveSlotProto"));
+    assert(reviewedBreadType("Holoholo.Proto.Shared.Bread", "BreadModeEnum.Types.Modifier"));
+    assert(!reviewedBreadType("Holoholo.Proto.Shared.Bread", "Other"));
+    assert(!allowedNamespace("Holoholo.Proto.Shared.Bread"));
     auto support = observe("support", "", "", "", "", "", 0, 10);
     assert(support.find("\"search\":true") != std::string::npos);
     assert(support.find("\"properties\":false") != std::string::npos);
     auto page = observe("search", "holo-fixture.dll", "", "synthetic", "", "", 0, 1);
     assert(page.find("SyntheticInventoryBag") != std::string::npos && page.find("\"next_offset\":1") != std::string::npos);
     auto next = observe("search", "holo-fixture.dll", "", "synthetic", "", "", 1, 10);
+    assert(next.find("scan_progress") != std::string::npos);
     assert(next.find("SyntheticJournalEntry") != std::string::npos);
     assert(next.find("AuthSession") == std::string::npos && next.find("Unrelated") == std::string::npos);
     auto methods = observe("type", "", bag.ns, bag.name, "methods", "journal", 0, 10);

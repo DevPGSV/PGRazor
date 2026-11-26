@@ -162,6 +162,12 @@ class CatalogTests(unittest.TestCase):
                 relation = catalog.record(DiscoveryQuery("type", ns="Fixture", name="Collection", kind="interfaces"),
                                           Job("relation", "completed", None, interface), version="fixture")
                 self.assertEqual(catalog.compare(relation)[-1]["status"], "confirmed")
+                self.assertEqual(catalog.relationships("Fixture.IBag", version="fixture",
+                                                       relation="implements")["items"][0]["owner"], "Fixture.Collection")
+                self.assertEqual(catalog.members(version="fixture", source="runtime", kind="fields",
+                                                 value_type="System.Int64")["items"][0]["name"], "Diff")
+                self.assertEqual(catalog.members(version="fixture", namespace="Fixture", kind="fields",
+                                                 limit=1)["next_offset"], 1)
                 members = catalog.search("unresolved", version="fixture")
                 self.assertIsNone(members["members"][0]["type"])
                 self.assertEqual(members["runtime"][0]["observation_id"], first)

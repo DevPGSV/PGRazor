@@ -57,6 +57,11 @@ bool allowedNamespace(const std::string &ns) {
             ns == "Niantic.Holoholo" || ns.rfind("Niantic.Holoholo.", 0) == 0) && !redacted(ns);
 }
 
+bool reviewedBreadType(const std::string &ns, const std::string &name) {
+    return ns == "Holoholo.Proto.Shared.Bread"
+        && (name == "BreadMoveSlotProto" || name == "BreadModeEnum.Types.Modifier");
+}
+
 std::string quoted(const std::string &value) {
     if (value.empty() || redacted(value)) return "null";
     std::string out = "\"";
@@ -127,9 +132,12 @@ struct Page {
         items += value;
         return true;
     }
-    std::string json(int next, const std::string &extra = {}) const {
+    std::string json(int next, const std::string &extra = {}, const char *reason = nullptr, size_t scanned = 0) const {
         return "{\"availability\":\"observed\",\"provenance\":\"il2cpp_runtime\",\"next_offset\":"
-            + (next < 0 ? "null" : std::to_string(next)) + ",\"items\":[" + items + "]" + extra + "}";
+            + (next < 0 ? "null" : std::to_string(next)) + ",\"items\":[" + items + "]" + extra
+            + ",\"scan_progress\":{\"examined\":" + std::to_string(scanned)
+            + ",\"termination\":\"" + (reason ? reason : next < 0 ? "end_of_scope" : "page_limit")
+            + "\",\"coverage\":\"bounded_scope\"}}";
     }
 };
 
@@ -142,6 +150,31 @@ std::string clsRow(const PgrBootBinding &boot, void *klass, const std::string &a
     return "{\"assembly\":" + quoted(assembly) + ",\"namespace\":" + quoted(ns) + ",\"name\":" + quoted(name)
         + ",\"type\":" + quoted(typeName(boot, fn<Ptr>(boot.meta.class_get_type)(klass)))
         + ",\"enum\":" + flag(fn<bool (*)(void *)>(boot.meta.class_is_enum)(klass)) + "}";
+}
+
+void *exactType(const PgrBootBinding &boot, const Exports &x, void *image,
+                const std::string &ns, const std::string &name) {
+    auto fromName = fn<void *(*)(void *, const char *, const char *)>(boot.meta.class_from_name);
+    if (!reviewedBreadType(ns, name) || name == "BreadMoveSlotProto")
+        return fromName(image, ns.c_str(), name.c_str());
+    if (!x.className || !boot.meta.class_get_nested_types) return nullptr;
+    auto nested = fn<Iterate>(boot.meta.class_get_nested_types);
+    void *owner = fromName(image, ns.c_str(), "BreadModeEnum");
+    for (const char *part : {"Types", "Modifier"}) {
+        if (!owner) return nullptr;
+        void *iter = nullptr;
+        void *match = nullptr;
+        for (size_t i = 0; i < PGR_MD_SCAN_MAX; i++) {
+            void *candidate = nested(owner, &iter);
+            if (!candidate) break;
+            if (label(x.className(candidate)) == part) {
+                if (match && match != candidate) return nullptr;
+                match = candidate;
+            }
+        }
+        owner = match;
+    }
+    return owner;
 }
 
 std::string missing(const char *reason) {
@@ -201,6 +234,7 @@ std::string members(const PgrBootBinding &boot, const Exports &x, void *klass,
             row += ",\"type\":" + quoted(typeName(boot, type));
             if (kind == "fields" && isEnum) {
                 row += ",\"literal\":" + flag((fn<uint32_t (*)(void *)>(boot.meta.field_get_flags)(member) & 0x40) != 0);
+                row += ",\"constant_value\":null";
             }
         }
         if (!page.add(row + "}", limit)) { next = index; break; }
@@ -208,7 +242,9 @@ std::string members(const PgrBootBinding &boot, const Exports &x, void *klass,
     return page.json(next, ",\"declaration\":" + clsRow(boot, klass, assembly, ns, name)
         + ",\"parent\":" + quoted(parent ? typeName(boot, classType(parent)) : std::string{})
         + ",\"enum_underlying_type\":" + quoted(typeName(boot, baseType))
-        + ",\"scan_limit_reached\":" + flag(index == 1024));
+        + ",\"scan_limit_reached\":" + flag(index == 1024)
+        + (isEnum ? ",\"enum_constant_values\":\"unavailable\"" : ""),
+        index == 1024 ? "member_scan_limit" : nullptr, size_t(index));
 }
 
 std::string observe(const std::string &op, const std::string &assembly, const std::string &ns,
@@ -239,25 +275,29 @@ std::string observe(const std::string &op, const std::string &assembly, const st
     if (op == "assemblies" && !x.imageName) return missing("assembly_export_unavailable");
     if (op == "search" && !(x.imageName && x.classCount && x.imageClass && x.className && x.classNamespace))
         return missing("type_enumeration_exports_unavailable");
-    if (op == "type" && !allowedNamespace(ns)) return missing("namespace_outside_scope");
+    if (op == "type" && !allowedNamespace(ns) && !reviewedBreadType(ns, name)) return missing("namespace_outside_scope");
     if ((op == "search" || op == "type") && !assembly.empty() && !x.imageName)
         return missing("assembly_filter_unavailable");
+    if (op == "type" && reviewedBreadType(ns, name) && !x.imageName)
+        return missing("assembly_export_unavailable");
     Page page;
+    size_t imagesExamined = 0;
     size_t start = op == "search" ? size_t(offset / kImageStride) : op == "assemblies" ? size_t(offset) : 0;
     size_t scanned = 0;
     void *found = nullptr;
     std::string foundAssembly;
     for (size_t i = start; i < total; i++) {
         if (Clock::now() >= deadline) return missing("observation_deadline");
+        ++imagesExamined;
         void *image = fn<Ptr>(boot.meta.assembly_get_image)(list[i]);
         if (!image) continue;
         auto imageName = x.imageName ? label(x.imageName(image)) : std::string{};
         if ((x.imageName && !allowedAssembly(imageName)) || (!assembly.empty() && imageName != assembly)) continue;
         if (op == "assemblies") {
-            if (!page.add(quoted(imageName), limit)) return page.json(int(i));
+            if (!page.add(quoted(imageName), limit)) return page.json(int(i), {}, "page_limit", imagesExamined);
         } else if (op == "type") {
-            void *candidate = fn<void *(*)(void *, const char *, const char *)>(boot.meta.class_from_name)(
-                image, ns.c_str(), name.c_str());
+            if (reviewedBreadType(ns, name) && imageName != "holo-protos.dll") continue;
+            void *candidate = exactType(boot, x, image, ns, name);
             if (candidate) {
                 if (found && candidate != found) return missing("ambiguous_type");
                 found = candidate;
@@ -268,20 +308,22 @@ std::string observe(const std::string &op, const std::string &assembly, const st
             if (count > kImageStride) return missing("image_limit");
             for (size_t j = i == start ? size_t(offset % kImageStride) : 0; j < count; j++) {
                 const int cursor = int(i * kImageStride + j);
-                if (scanned++ >= 4096 || Clock::now() >= deadline) return page.json(cursor);
+                if (scanned >= 4096) return page.json(cursor, {}, "type_scan_limit", scanned);
+                if (Clock::now() >= deadline) return page.json(cursor, {}, "observation_deadline", scanned);
+                ++scanned;
                 void *klass = x.imageClass(image, j);
                 if (!klass) continue;
                 auto currentNs = label(x.classNamespace(klass));
                 auto currentName = label(x.className(klass));
                 if (!allowedNamespace(currentNs) || currentName.empty() || redacted(currentName)
                         || (!ns.empty() && currentNs != ns) || !matches(currentName, name)) continue;
-                if (!page.add(clsRow(boot, klass, imageName, currentNs, currentName), limit)) return page.json(cursor);
+                if (!page.add(clsRow(boot, klass, imageName, currentNs, currentName), limit)) return page.json(cursor, {}, "page_limit", scanned);
             }
         }
     }
     if (op == "type") return found ? members(boot, x, found, foundAssembly, ns, name, kind, q, offset, limit, deadline)
         : missing("type_not_found");
-    return page.json(-1);
+    return page.json(-1, {}, "end_of_scope", op == "search" ? scanned : imagesExamined);
 }
 
 std::string input(JNIEnv *env, jstring value) {
