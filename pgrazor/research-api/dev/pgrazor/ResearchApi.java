@@ -13,7 +13,7 @@ final class ResearchApi implements LocalApiExtension {
     private static final String PREFIX = "/research/v1/";
     private static final String FEATURES = "{\"production_api\":true,\"websocket\":true,\"research_api\":true,\"research_discovery\":true}";
     private static final String CAPABILITIES = "{\"api_version\":\"1\",\"features\":" + FEATURES
-        + ",\"operations\":[\"status\",\"capabilities\",\"events\",\"runtime\",\"assemblies\",\"types\",\"type\",\"contracts\",\"validate\",\"diagnostics\",\"live/discover\",\"live/job\",\"live/cancel\",\"live/observe\",\"observations/contracts\"],\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]}";
+        + ",\"operations\":[\"status\",\"capabilities\",\"events\",\"runtime\",\"assemblies\",\"types\",\"type\",\"contracts\",\"validate\",\"diagnostics\",\"live/discover\",\"live/job\",\"live/cancel\",\"live/observe\",\"observations/contracts\",\"collection/start\",\"collection/status\",\"collection/page\",\"collection/cancel\",\"collection/diagnostics\"],\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]}";
     private final ResearchApiSession session;
 
     private final ResearchMetadata metadata;
@@ -21,6 +21,7 @@ final class ResearchApi implements LocalApiExtension {
     private final ResearchObservations observations;
     private final ResearchProgression progression;
     private final ResearchPokemonBag pokemonBag;
+    private final ResearchPokemonExport pokemonExport;
 
     ResearchApi(Application app, LocalApiData data) {
         this(new ResearchApiSession(SystemClock::elapsedRealtime, data::eventEpoch,
@@ -38,14 +39,20 @@ final class ResearchApi implements LocalApiExtension {
         metadata = new ResearchMetadata(data);
         progression = new ResearchProgression(data);
         pokemonBag = new ResearchPokemonBag(data);
+        pokemonExport = new ResearchPokemonExport(data, SystemClock::elapsedRealtime, System::currentTimeMillis,
+            ResearchDiscoveryNative::setExportRequest);
         session.observeLease((sequence, deadline) -> {
             pokemonBag.setLease(sequence);
+            pokemonExport.leaseChanged(sequence);
             progression.setLease(sequence, deadline);
         });
         observations = new ResearchObservations(data, progression, pokemonBag);
     }
 
-    @Override public void pokemonBagObserved(String packet) { pokemonBag.accept(packet); }
+    @Override public void pokemonBagObserved(String packet) {
+        if (packet != null && packet.startsWith("export|")) pokemonExport.accept(packet);
+        else pokemonBag.accept(packet);
+    }
 
     @Override public void progressionObserved(String packet) { progression.accept(packet); }
 
@@ -70,14 +77,20 @@ final class ResearchApi implements LocalApiExtension {
             @Override public boolean acceptsPost(String uri) {
                 return uri.equals(PREFIX + "live/discover") || uri.startsWith(PREFIX + "live/discover?")
                     || uri.equals(PREFIX + "live/observe") || uri.startsWith(PREFIX + "live/observe?")
+                    || uri.startsWith(PREFIX + "collection/start?")
+                    || uri.startsWith(PREFIX + "collection/cancel?")
                     || uri.equals(PREFIX + "live/cancel") || uri.startsWith(PREFIX + "live/cancel?");
             }
 
             @Override public LocalApiRoutes.Reply post(String uri) {
+                if (uri.startsWith(PREFIX + "collection/"))
+                    return collection(uri, true);
                 return discovery.route(uri.substring((PREFIX + "live/").length()), true, lease.id, this::valid, observations);
             }
 
             @Override public LocalApiRoutes.Reply get(String uri) {
+                if (uri.startsWith(PREFIX + "collection/"))
+                    return collection(uri, false);
                 if (uri.equals(PREFIX + "observations/contracts")) return observations.status();
                 if (uri.startsWith(PREFIX + "live/")) {
                     return discovery.route(uri.substring((PREFIX + "live/").length()), false, lease.id, this::valid);
@@ -92,6 +105,13 @@ final class ResearchApi implements LocalApiExtension {
                 }
                 return uri.startsWith(PREFIX) ? metadata.get(uri.substring(PREFIX.length()))
                     : new LocalApiRoutes.Reply(404, "{\"error\":\"NOT_FOUND\"}");
+            }
+
+            private LocalApiRoutes.Reply collection(String uri, boolean post) {
+                LocalApiRoutes.Reply[] reply = new LocalApiRoutes.Reply[1];
+                return session.ifActive(lease, () -> reply[0] = pokemonExport.route(
+                        uri.substring((PREFIX + "collection/").length()), post))
+                    ? reply[0] : new LocalApiRoutes.Reply(401, "{\"error\":\"research_inactive\"}");
             }
 
             @Override public LocalApiWebSocket.Feed events(String uri) {

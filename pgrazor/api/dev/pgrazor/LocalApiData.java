@@ -113,6 +113,10 @@ final class LocalApiData {
         return identityObservation < 0 ? null : generation;
     }
 
+    synchronized boolean verifiedOwner(String expectedSession, String owner) {
+        return expectedSession != null && expectedSession.equals(session()) && owner.equals(identity);
+    }
+
     synchronized <T> Snapshot<T> latest(Slot<T> slot) {
         String session = session();
         return session != null && slot.latest != null && session.equals(slot.latest.session) ? slot.latest : null;

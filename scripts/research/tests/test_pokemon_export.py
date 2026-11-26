@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from research_sdk import Job, ResearchError
-from research_sdk.pokemon_export import partial_sample, save_export
+from research_sdk.pokemon_export import _FIELDS, complete_snapshot, partial_sample, save_export
 
 
 def observed():
@@ -91,6 +91,78 @@ class PokemonExportTest(unittest.TestCase):
             directory.chmod(0o755)
             with self.assertRaises(ResearchError):
                 save_export(result, directory, "test", "json")
+
+
+class FakeSnapshot:
+    id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    revision = "20"
+
+    def __init__(self):
+        self.rows = [dict.fromkeys(sorted(_FIELDS)) | row for row in observed()["items"]]
+        self.rows[0]["is_egg"] = False
+        self.rows[1]["is_egg"] = True
+        self.timeout = 4
+        self.expected = len(self.rows)
+        self.edit = lambda page, offset: None
+
+    def _request(self, endpoint, method="GET", **params):
+        if endpoint == "collection/start":
+            self.page_size = params["page_size"]
+            return {"id": self.id, "revision": self.revision, "state": "completed",
+                    "captured_entry_count": self.expected, "source_entry_count": self.expected,
+                    "cursor": f"{self.id}.{self.revision}.0"}
+        offset = int(params["cursor"].split(".")[-1])
+        end = min(len(self.rows), offset + self.page_size)
+        page = {"snapshot_id": self.id, "revision": self.revision, "coverage": "complete",
+                "collection_complete": True, "consistency": "non_atomic", "immutable": True,
+                "structural_consistency": "verified", "freshness": "retained",
+                "source_entry_count": self.expected, "captured_entry_count": self.expected,
+                "capture_started_at": "2026-11-26T12:00:00Z", "capture_finished_at": "2026-11-26T12:00:01Z",
+                "capture_elapsed_ms": 1000, "classified_egg_rows": 1, "classified_pokemon_rows": self.expected - 1,
+                "offset": offset, "items": self.rows[offset:end],
+                "next_cursor": f"{self.id}.{self.revision}.{end}" if end < len(self.rows) else None}
+        self.edit(page, offset)
+        return page
+
+
+class CompleteExportTest(unittest.TestCase):
+    def test_snapshot_and_selection(self):
+        result = complete_snapshot(FakeSnapshot(), page_size=1, selection="eggs")
+        self.assertEqual(result["source_entry_count"], 2)
+        self.assertEqual(result["exported_rows"], 1)
+        self.assertIs(result["items"][0]["is_egg"], True)
+        with TemporaryDirectory() as temp:
+            path = save_export(result, Path(temp), "sample", "csv")
+            self.assertEqual(path.name, "sample-complete.csv")
+            with path.open() as file:
+                row = next(csv.DictReader(file))
+            self.assertEqual(row["export_consistency"], "non_atomic")
+            self.assertEqual(row["instance_id"], "2")
+
+    def test_large_fixture(self):
+        fixture = FakeSnapshot()
+        fixture.rows += [dict(fixture.rows[0], instance_id=str(n)) for n in range(3, 2049)]
+        fixture.expected = len(fixture.rows)
+        result = complete_snapshot(fixture)
+        self.assertEqual(result["exported_rows"], 2048)
+
+    def test_changed_identity_revision_counts_or_cursor_rejected(self):
+        for key, value in (("snapshot_id", "changed"), ("revision", "21"),
+                           ("source_entry_count", 3), ("next_cursor", "unexpected"),
+                           ("consistency", "atomic"), ("collection_complete", False)):
+            with self.subTest(key=key), self.assertRaises(ResearchError):
+                fixture = FakeSnapshot()
+                fixture.edit = lambda page, offset: page.update({key: value}) if offset else None
+                complete_snapshot(fixture, page_size=1)
+
+    def test_duplicate_or_missing_rows_rejected(self):
+        fixture = FakeSnapshot()
+        fixture.rows[1]["instance_id"] = fixture.rows[0]["instance_id"]
+        with self.assertRaises(ResearchError):
+            complete_snapshot(fixture)
+        fixture.expected = 3
+        with self.assertRaises(ResearchError):
+            complete_snapshot(fixture)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ public final class ResearchApiTest {
         observations();
         progression();
         pokemonBag();
+        pokemonExport();
         discovery();
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
@@ -270,6 +271,69 @@ public final class ResearchApiTest {
         data.seeIdentity("b", true);
         check(bag.latest() == null);
         check(!bag.accept("60104|0061|10|10|15|25|390|15|0|9|1|0"));
+    }
+
+    private static String jsonString(String json, String key) {
+        String prefix = "\"" + key + "\":\"";
+        int start = json.indexOf(prefix) + prefix.length();
+        return json.substring(start, json.indexOf('"', start));
+    }
+
+    private static void pokemonExport() {
+        AtomicLong clock = new AtomicLong(100);
+        AtomicLong requested = new AtomicLong();
+        LocalApiData data = new LocalApiData(clock::get, clock::get);
+        data.enable();
+        ResearchPokemonExport export = new ResearchPokemonExport(data, clock::get, clock::get,
+            (revision, lease, deadline) -> requested.set(revision));
+        export.leaseChanged(9);
+        check(export.route("start?page_size=1", true).code == 409);
+        data.seeIdentity("a", true);
+        clock.incrementAndGet();
+        check(data.publish(data.trainer, "a", 101, LocalApiData.Coverage.PARTIAL, null));
+        String start = export.route("start?page_size=1", true).body;
+        long revision = requested.get();
+        String id = jsonString(start, "id");
+        String p = "export|" + revision + "|9|0061|";
+        check(export.route("start?page_size=1", true).code == 409);
+        clock.set(102);
+        export.accept(p + "slice|2|0|101|102|1|1|25|120|5|0|8|1|0");
+        clock.set(103);
+        export.accept(p + "done|2|1|101|103|1|2|25|119|5|0|8|0|0");
+        check(requested.get() == 0);
+        String cursor = jsonString(export.route("status?id=" + id, false).body, "cursor");
+        String first = export.route("page?cursor=" + cursor, false).body;
+        check(first.contains("\"consistency\":\"non_atomic\"") && first.contains("\"cp\":120"));
+        String next = jsonString(first, "next_cursor");
+        String second = export.route("page?cursor=" + next, false).body;
+        check(second.contains("\"cp\":119") && second.contains("\"next_cursor\":null"));
+        check(export.route("page?cursor=" + id + ".9.9999", false).code == 400);
+        for (int i = 0; i < 24; i++) {
+            long current = clock.addAndGet(5000);
+            check(data.publish(data.trainer, "a", current, LocalApiData.Coverage.PARTIAL, null));
+        }
+        check(export.route("page?cursor=" + next, false).code == 404);
+        export.leaseChanged(10);
+        check(export.route("page?cursor=" + next, false).code == 404);
+
+        id = jsonString(export.route("start?page_size=2", true).body, "id");
+        p = "export|" + requested.get() + "|10|0061|";
+        export.accept(p + "done|2|0|" + clock.get() + "|" + clock.get() + "|0|1|25|100|5|0|8|0|0;1|25|120|5|0|8|1|0");
+        check(export.route("status?id=" + id, false).body.contains("invalid_or_missing_slice"));
+        id = jsonString(export.route("start?page_size=1", true).body, "id");
+        export.accept("export|" + requested.get() + "|10|0061|failed|structure_changed");
+        check(export.route("status?id=" + id, false).body.contains("structure_changed"));
+        id = jsonString(export.route("start?page_size=1", true).body, "id");
+        check(export.route("cancel?id=" + id, true).body.contains("cancelled") && requested.get() == 0);
+        id = jsonString(export.route("start?page_size=1", true).body, "id");
+        for (int i = 0; i < 7; i++) {
+            long current = clock.addAndGet(5000);
+            check(data.publish(data.trainer, "a", current, LocalApiData.Coverage.PARTIAL, null));
+        }
+        check(export.route("status?id=" + id, false).body.contains("deadline") && requested.get() == 0);
+        id = jsonString(export.route("start?page_size=1", true).body, "id");
+        data.seeIdentity("b", true);
+        check(export.route("status?id=" + id, false).code == 404 && requested.get() == 0);
     }
 
     private static void progression() throws Exception {

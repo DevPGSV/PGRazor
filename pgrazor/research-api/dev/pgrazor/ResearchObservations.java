@@ -87,6 +87,16 @@ final class ResearchObservations {
         }
     }
 
+    static String pokemonRow(ResearchPokemonBag.Row row) {
+        StringBuilder out = new StringBuilder("{");
+        for (Field field : Field.values()) {
+            if (!supported(POKEMON, field)) continue;
+            if (out.length() > 1) out.append(',');
+            out.append('"').append(field).append("\":").append(field.value(row));
+        }
+        return out.append('}').toString();
+    }
+
     ResearchObservations(LocalApiData data) { this(data, new ResearchProgression(data)); }
 
     ResearchObservations(LocalApiData data, ResearchProgression progression) {

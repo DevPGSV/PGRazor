@@ -1,5 +1,7 @@
 #include "../native/research-discovery/discovery.cpp"
 
+void pgr_research_export_request(uint64_t, uint64_t, uint64_t) noexcept {}
+
 #include <cassert>
 #include <cstdlib>
 #include <cstring>

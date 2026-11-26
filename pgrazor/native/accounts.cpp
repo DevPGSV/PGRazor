@@ -770,6 +770,9 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
 
   ActiveFrameGuard frame_guard;
   ScopedTickFlag tick_flag;
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  pgr_research_export_cleanup();
+#endif
 
   bool need_cleanup = false;
   {
@@ -1011,23 +1014,27 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
   }
 #endif
 #ifdef __ANDROID__
-  if (trainer_observed && pgr_local_api_trainer_requested()) {
+  const bool trainer_requested = trainer_observed && pgr_local_api_trainer_requested();
+  if (trainer_requested)
     pgr_local_api_trainer(player_root.target(), id_buf, id_len, name_buf, name_len, trainer_observed);
 #ifdef PGRAZOR_RESEARCH_DISCOVERY
-    const uint64_t start = clock_boottime_ms();
-    if (!research_identity_changed && research_lease && research_container.target() &&
-        pgr_research_progression_lease(start) == research_lease) {
-      void *contract = nullptr, *implementation = nullptr;
-      ScopedGcRoot bag;
-      if (pgr_research_bag_classes(&contract, &implementation) &&
-          resolve_in_container(research_container, static_cast<Il2CppClass*>(contract),
-                               static_cast<Il2CppClass*>(implementation), &bag)) {
+  const uint64_t start = clock_boottime_ms();
+  const bool exporting = pgr_research_export_pending(start, research_lease);
+  if ((trainer_requested || exporting) && !research_identity_changed && research_lease &&
+      research_container.target() && pgr_research_progression_lease(start) == research_lease) {
+    void *contract = nullptr, *implementation = nullptr;
+    ScopedGcRoot bag;
+    if (pgr_research_bag_classes(&contract, &implementation) &&
+        resolve_in_container(research_container, static_cast<Il2CppClass*>(contract),
+                             static_cast<Il2CppClass*>(implementation), &bag)) {
+      if (exporting)
+        pgr_research_export_slice(bag.target(), player_root.target(), id_buf, id_len, research_lease, start);
+      else
         pgr_research_bag_observed(bag.target(), player_root.target(), id_buf, id_len,
                                   trainer_observed, research_lease, start);
-      }
     }
-#endif
   }
+#endif
 #else
   (void) trainer_observed;
 #endif

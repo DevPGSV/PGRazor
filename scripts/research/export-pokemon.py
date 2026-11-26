@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a bounded Pokémon sample from the Research API to a private local file."""
+"""Export a private Pokémon sample or complete non-atomic collection."""
 import argparse
 import getpass
 import json
@@ -8,21 +8,25 @@ from pathlib import Path
 import stat
 
 from research_sdk import Client, ResearchError
-from research_sdk.pokemon_export import partial_sample, save_export
+from research_sdk.pokemon_export import complete_snapshot, partial_sample, save_export
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
     parser.add_argument("--token-file", type=Path)
-    parser.add_argument("--partial", action="store_true", required=True,
-                        help="explicitly acknowledge bounded sample coverage")
-    parser.add_argument("--limit", type=int, default=10)
+    scope = parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--partial", action="store_true", help="export a bounded sample")
+    scope.add_argument("--complete", action="store_true", help="request an entire non-atomic snapshot")
+    parser.add_argument("--limit", type=int, default=10, help="partial sample size or complete snapshot page size")
+    parser.add_argument("--selection", choices=("all", "pokemon", "eggs"), default="all")
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--format", choices=("json", "csv"), required=True)
     parser.add_argument("--iv-percent", action="store_true")
     args = parser.parse_args()
+    if args.partial and args.selection != "all":
+        parser.error("--selection requires --complete")
     try:
         if args.token_file:
             with args.token_file.open("rb") as stream:
@@ -32,7 +36,9 @@ def main() -> int:
                 token = stream.read(128).decode("ascii").strip()
         else:
             token = getpass.getpass("Research bearer token: ")
-        result = partial_sample(Client(args.base, token), limit=args.limit, iv_percent=args.iv_percent)
+        client = Client(args.base, token)
+        result = (complete_snapshot(client, page_size=args.limit, selection=args.selection, iv_percent=args.iv_percent)
+                  if args.complete else partial_sample(client, limit=args.limit, iv_percent=args.iv_percent))
         path = save_export(result, args.directory, args.name, args.format)
         print(json.dumps({"file": str(path), "coverage": result["coverage"], "rows": result["exported_rows"]}))
         return 0

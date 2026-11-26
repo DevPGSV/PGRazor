@@ -13,6 +13,7 @@
 #include <cstring>
 #include <map>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <mutex>
@@ -384,4 +385,135 @@ void pgr_research_bag_observed(void *bag,void *player,const uint16_t *id,uint16_
   transport->emit(19,nullptr,0,args,2);
  } catch (...) {}
 }
+namespace {
+constexpr int kExportRows = 2048, kExportSliceRows = 32;
+constexpr uint64_t kSliceSoftMs = 4, kSliceHardMs = 12;
+std::atomic<uint64_t> export_request{0}, export_lease{0}, export_deadline{0};
+struct ExportCursor {
+ uint64_t id=0, started=0;
+ Root bag, player, map, list, head, next;
+ std::u16string owner;
+ int count=0, version=0, position=0;
+};
+ExportCursor cursor;
+uint64_t finished_request=0;
+
+bool emit_export(uint64_t request,uint64_t lease,const std::u16string &owner,
+                 const std::string &data) {
+ const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
+ if(!transport)return false;
+ std::string packet="export|"+std::to_string(request)+"|"+std::to_string(lease)+"|";
+ constexpr char digits[]="0123456789abcdef";
+ for(char16_t c:owner) for(int shift=12;shift>=0;shift-=4) packet+=digits[(c>>shift)&15];
+ packet+="|"+data;
+ const char event[]="research-pokemon-bag";
+ const PgrRuntimeTransportString args[]={{event,sizeof(event)-1},{packet.data(),uint32_t(packet.size())}};
+ return transport->emit(19,nullptr,0,args,2)==0;
+}
+
+void finish_export(uint64_t request) {
+ finished_request=request;
+ cursor=ExportCursor{};
+}
+
+void verify_export_source(void *bag,void *player) {
+ require(cursor.bag.get()==bag && cursor.player.get()==player
+      && field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==player
+      && field<void*>(bag,"esed",kMap)==cursor.map.get()
+      && field<void*>(cursor.map.get(),"list",kList)==cursor.list.get()
+      && field<void*>(cursor.list.get(),"head",kNode)==cursor.head.get()
+      && field<int32_t>(cursor.list.get(),"version","System.Int32")==cursor.version
+      && field<int32_t>(cursor.list.get(),"count","System.Int32")==cursor.count,"structure_changed");
+}
+}
+
+void pgr_research_export_request(uint64_t request,uint64_t lease,uint64_t deadline) noexcept {
+ export_request.store(0);
+ export_lease.store(lease);
+ export_deadline.store(deadline);
+ export_request.store(request);
+}
+
+bool pgr_research_export_pending(uint64_t now,uint64_t lease) noexcept {
+ const auto request=export_request.load();
+ return request && request!=finished_request && lease && lease==export_lease.load()
+     && now<export_deadline.load() && request==export_request.load();
+}
+
+void pgr_research_export_cleanup() noexcept {
+ if (!cursor.id) return;
+ const uint64_t now=clock_ms();
+ if (cursor.id!=export_request.load()
+     || !pgr_research_export_pending(now,pgr_research_progression_lease(now))) finish_export(cursor.id);
+}
+
+void pgr_research_export_slice(void *bag,void *player,const uint16_t *id,uint16_t length,
+                               uint64_t lease,uint64_t started) noexcept {
+ const auto request=export_request.load();
+ if (!bag || !player || !id || !length || length>256
+     || !pgr_research_export_pending(clock_ms(),lease) || request!=export_request.load()) return;
+ try {
+  std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
+  if(!lock)return;
+  ensure_research_boot();
+  const std::u16string owner(id,id+length);
+  if (cursor.id!=request) {
+   cursor=ExportCursor{};
+   cursor.id=request; cursor.owner=owner; cursor.started=started;
+   cursor.bag=Root(bag); cursor.player=Root(player);
+   cursor.map=Root(field<void*>(bag,"esed",kMap));assert_type(cursor.map.get(),kMap);
+   cursor.list=Root(field<void*>(cursor.map.get(),"list",kList));assert_type(cursor.list.get(),kList);
+   cursor.count=field<int32_t>(cursor.list.get(),"count","System.Int32");
+   require(cursor.count>0 && cursor.count<=kExportRows,"source_unavailable_or_over_limit");
+   cursor.version=field<int32_t>(cursor.list.get(),"version","System.Int32");
+   cursor.head=Root(field<void*>(cursor.list.get(),"head",kNode));assert_type(cursor.head.get(),kNode);
+   cursor.next=Root(cursor.head.get());
+  }
+  require(cursor.owner==owner,"structure_changed");
+  verify_export_source(bag,player);
+  std::string rows;
+  const int offset=cursor.position;
+  while (cursor.position<cursor.count && cursor.position-offset<kExportSliceRows
+         && rows.size()<10000 && clock_ms()-started<kSliceSoftMs) {
+   void *node=cursor.next.get();
+   assert_type(node,kNode);
+   require(field<void*>(node,"list",kList)==cursor.list.get()
+        && (cursor.position==0 || node!=cursor.head.get()),"structure_changed");
+   void *get=method(node,"get_Value",0);
+   require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(get,nullptr)&0x10)
+        && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(get))==kPair,"invalid_node");
+   Root pair(invoke(get,node));assert_type(pair.get(),kPair);
+   const auto key=field<uint64_t>(pair.get(),"key","System.UInt64");
+   Root pokemon(field<void*>(pair.get(),"value",kPokemon));assert_type(pokemon.get(),kPokemon);
+   if (!rows.empty()) rows+=';';
+   rows+=capture_pokemon(pokemon.get(),key);
+   cursor.next=Root(field<void*>(cursor.next.get(),"next",kNode));
+   ++cursor.position;
+  }
+  verify_export_source(bag,player);
+  const bool done=cursor.position==cursor.count;
+  require(!done || cursor.next.get()==cursor.head.get(),"structure_changed");
+  const uint64_t now=clock_ms(), slice=now-started;
+  require(slice<kSliceHardMs,"slice_budget");
+  if (!pgr_research_export_pending(now,lease) || request!=export_request.load()
+       || lease!=pgr_research_progression_lease(now)) { finish_export(request); return; }
+  if (rows.empty()) return;
+  const bool emitted=emit_export(request,lease,owner,std::string(done?"done":"slice")+"|"
+      +std::to_string(cursor.count)+"|"+std::to_string(offset)+"|"+std::to_string(cursor.started)+"|"
+      +std::to_string(now)+"|"+std::to_string(slice)+"|"+rows);
+  if (done || !emitted) finish_export(request);
+ } catch (const Failure &failure) {
+  try {
+   if (request==export_request.load() && cursor.id==request) {
+    const std::string reason=failure.where;
+    emit_export(request,lease,cursor.owner,"failed|"+(reason=="structure_changed" || reason=="slice_budget"
+      || reason=="source_unavailable_or_over_limit" ? reason : "invalid_source"));
+   }
+  } catch (...) {}
+  finish_export(request);
+ } catch (...) {
+  finish_export(request);
+ }
+}
+
 #endif

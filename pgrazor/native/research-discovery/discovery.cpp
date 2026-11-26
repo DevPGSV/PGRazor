@@ -365,14 +365,19 @@ uint64_t pgr_research_progression_lease(uint64_t now_ms) noexcept {
     return lease && now_ms < progressionDeadline.load() && lease == progressionLease.load() ? lease : 0;
 }
 
+static void JNICALL setExportRequest(JNIEnv *, jclass, jlong request, jlong lease, jlong deadline) {
+    pgr_research_export_request(request, lease, deadline);
+}
+
 int pgrazor_register_research_discovery(JNIEnv *env) {
     const auto owner = env->FindClass("dev/pgrazor/ResearchDiscoveryNative");
     if (!owner) return -1;
     const JNINativeMethod methods[] = {{const_cast<char *>("query"),
         const_cast<char *>("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;"),
         reinterpret_cast<void *>(&query)}, {const_cast<char *>("setProgressionLease"),
-        const_cast<char *>("(JJ)V"), reinterpret_cast<void *>(&setProgressionLease)}};
-    const int result = env->RegisterNatives(owner, methods, 2);
+        const_cast<char *>("(JJ)V"), reinterpret_cast<void *>(&setProgressionLease)}, {const_cast<char *>("setExportRequest"),
+        const_cast<char *>("(JJJ)V"), reinterpret_cast<void *>(&setExportRequest)}};
+    const int result = env->RegisterNatives(owner, methods, 3);
     env->DeleteLocalRef(owner);
     return result;
 }
