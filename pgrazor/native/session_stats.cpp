@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <mutex>
 #include <string>
@@ -232,6 +234,79 @@ template<class T>T optional_field(void *o, const char *name, const char *type, T
  try { return field<T>(o,name,type); } catch (...) { return unknown; }
 }
 
+std::string nickname(void *pokemon) {
+ try {
+  Root name(field<void*>(pokemon,"nickname_","System.String"));
+  if (!name) return "-";
+  const int n=fn<int(*)(void*)>(exp("string_length"))(name.get());
+  if (n<0 || n>32) return "-";
+  const auto *chars=fn<const uint16_t*(*)(void*)>(boot.runtime.string_chars)(name.get());
+  if (n && !chars) return "-";
+  std::string hex;
+  constexpr char digits[]="0123456789abcdef";
+  for (int i=0;i<n;++i)
+   for (int shift=12;shift>=0;shift-=4) hex+=digits[(chars[i]>>shift)&15];
+  return hex;
+ } catch (...) { return "-"; }
+}
+
+int display_enum(void *object,const char *name,const char *type_name) {
+ try {
+  void *member=fn<void*(*)(void*,const char*)>(boot.meta.class_get_field_from_name)(klass(object),name);
+  require(member && !(fn<int(*)(void*)>(boot.meta.field_get_flags)(member)&0x10),name);
+  void *type=fn<void*(*)(void*)>(boot.meta.field_get_type)(member);
+  require(type && typename_of(type)==type_name,name);
+  void *enum_class=fn<void*(*)(void*)>(boot.meta.class_from_type)(type);
+  require(enum_class && fn<bool(*)(void*)>(boot.meta.class_is_enum)(enum_class),name);
+  void *base=fn<void*(*)(void*)>(boot.meta.class_enum_basetype)(enum_class);
+  require(base && typename_of(base)=="System.Int32",name);
+  int32_t value=-1;
+  fn<void(*)(void*,void*,void*)>(boot.runtime.field_get_value)(object,member,&value);
+  return value>=0 ? value : -1;
+ } catch (...) { return -1; }
+}
+
+std::string capture_display(void *pokemon) {
+ constexpr const char *display_type="Holoholo.Rpc.PokemonDisplayProto";
+ Root display(optional_field<void*>(pokemon,"pokemonDisplay_",display_type,nullptr));
+ int shiny=-1, form=-1, costume=-1, gender=-1, alignment=-1, bread=-1;
+ if (display && typename_of(fn<void*(*)(void*)>(boot.meta.class_get_type)(klass(display.get())))==display_type) {
+  const auto value=optional_field<uint8_t>(display.get(),"Shiny","System.Boolean",255);
+  if (value<=1) shiny=value;
+  form=display_enum(display.get(),"Form","Holoholo.Rpc.PokemonDisplayProto.Types.Form");
+  costume=display_enum(display.get(),"Costume","Holoholo.Rpc.PokemonDisplayProto.Types.Costume");
+  gender=display_enum(display.get(),"Gender","Holoholo.Rpc.PokemonDisplayProto.Types.Gender");
+  alignment=display_enum(display.get(),"Alignment","Holoholo.Rpc.PokemonDisplayProto.Types.Alignment");
+  bread=display_enum(display.get(),"BreadModeEnum","Holoholo.Proto.Shared.Bread.BreadModeEnum.Types.Modifier");
+ }
+ return "|"+std::to_string(shiny)+"|"+std::to_string(form)+"|"+std::to_string(costume)
+     +"|"+std::to_string(gender)+"|"+std::to_string(alignment)+"|"+std::to_string(bread);
+}
+
+std::string capture_pokemon(void *pokemon,uint64_t key) {
+ require(key && field<uint64_t>(pokemon,"id_","System.UInt64")==key,"key mismatch");
+ const bool egg=field<bool>(pokemon,"isEgg_","System.Boolean");
+ auto number=[&](const char *name) { return optional_field<int32_t>(pokemon,name,"System.Int32",-1); };
+ auto positive=[](int value) { return value>0 ? value : -1; };
+ auto iv=[](int value) { return value>=0 && value<=15 ? value : -1; };
+ auto flag=[&](const char *name) {
+  const int value=optional_field<uint8_t>(pokemon,name,"System.Boolean",255);
+  return value<=1 ? value : -1;
+ };
+ const float multiplier=optional_field<float>(pokemon,"cpMultiplier_","System.Single",-1);
+ const int64_t creation=optional_field<int64_t>(pokemon,"creationTimeMs_","System.Int64",-1);
+ const int values[]={positive(number("pokemonId_")),egg ? -1 : positive(number("cp_")),
+  egg ? -1 : iv(number("individualAttack_")),egg ? -1 : iv(number("individualDefense_")),
+  egg ? -1 : iv(number("individualStamina_")),flag("favorite_"),int(egg),
+  egg ? -1 : number("stamina_"),egg ? -1 : positive(number("maxStamina_")),
+  egg ? -1 : positive(number("move1_")),egg ? -1 : positive(number("move2_")),
+  egg ? -1 : positive(number("move3_")),egg ? -1 : flag("isLucky_")};
+ std::string row=std::to_string(key);
+ for (int value:values) row+="|"+std::to_string(value);
+ return row+"|"+std::to_string(!egg && std::isfinite(multiplier) && multiplier>0 ? multiplier : -1)
+     +"|"+std::to_string(creation>0 ? creation : -1)+"|"+nickname(pokemon)+(egg ? "|-1|-1|-1|-1|-1|-1" : capture_display(pokemon));
+}
+
 std::string capture_bag(void *bag,void *owner,uint64_t started) {
  require(clock_ms()-started<20,"capture deadline");
  require(field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==owner,"bag owner mismatch");
@@ -242,30 +317,32 @@ std::string capture_bag(void *bag,void *owner,uint64_t started) {
  // An empty backing list can mean initialization is incomplete.
  require(n>0 && n<=30000,"bag not ready");
  Root head(field<void*>(list.get(),"head",kNode));assert_type(head.get(),kNode);
- require(field<void*>(head.get(),"list",kList)==list.get(),"detached head");
- void *get=method(head.get(),"get_Value",0);
- require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(get,nullptr)&0x10)
-     && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(get))==kPair,"node getter signature");
- Root pair(invoke(get,head.get()));assert_type(pair.get(),kPair);
- const auto key=field<uint64_t>(pair.get(),"key","System.UInt64");
- Root pokemon(field<void*>(pair.get(),"value",kPokemon));assert_type(pokemon.get(),kPokemon);
- require(key && field<uint64_t>(pokemon.get(),"id_","System.UInt64")==key,"key mismatch");
- const int egg=field<bool>(pokemon.get(),"isEgg_","System.Boolean");
- const int species=optional_field<int32_t>(pokemon.get(),"pokemonId_","System.Int32",-1);
- const int cp=egg ? -1 : optional_field<int32_t>(pokemon.get(),"cp_","System.Int32",-1);
- const int attack=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualAttack_","System.Int32",-1);
- const int defense=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualDefense_","System.Int32",-1);
- const int stamina=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualStamina_","System.Int32",-1);
- const int favorite=optional_field<uint8_t>(pokemon.get(),"favorite_","System.Boolean",255);
+ constexpr std::size_t max_samples=10;
+ std::array<uint64_t,max_samples> seen{};
+ Root node(head.get());
+ std::string sample;
+ const std::size_t count=std::min<std::size_t>(n,max_samples);
+ for (std::size_t i=0;i<count;++i) {
+  require(clock_ms()-started<20,"capture deadline");
+  assert_type(node.get(),kNode);
+  require(field<void*>(node.get(),"list",kList)==list.get(),"detached node");
+  void *get=method(node.get(),"get_Value",0);
+  require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(get,nullptr)&0x10)
+      && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(get))==kPair,"node getter signature");
+  Root pair(invoke(get,node.get()));assert_type(pair.get(),kPair);
+  const auto key=field<uint64_t>(pair.get(),"key","System.UInt64");
+  for (std::size_t j=0;j<i;++j) require(seen[j]!=key,"duplicate key");
+  seen[i]=key;
+  Root pokemon(field<void*>(pair.get(),"value",kPokemon));assert_type(pokemon.get(),kPokemon);
+  sample+=(i==0 ? "" : ";")+capture_pokemon(pokemon.get(),key);
+  if (i+1<count) node=Root(field<void*>(node.get(),"next",kNode));
+ }
  require(field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==owner
       && field<void*>(bag,"esed",kMap)==map.get() && field<void*>(map.get(),"list",kList)==list.get()
       && field<void*>(list.get(),"head",kNode)==head.get()
       && field<int32_t>(list.get(),"version","System.Int32")==version
       && field<int32_t>(list.get(),"count","System.Int32")==n && clock_ms()-started<20,"bag changed");
- auto iv=[](int value) { return value>=0 && value<=15 ? value : -1; };
- return std::to_string(n)+"|"+std::to_string(key)+"|"+std::to_string(species>0?species:-1)+"|"+
-     std::to_string(cp>0?cp:-1)+"|"+std::to_string(iv(attack))+"|"+std::to_string(iv(defense))+"|"+
-     std::to_string(iv(stamina))+"|"+std::to_string(favorite<=1?favorite:-1)+"|"+std::to_string(egg);
+ return std::to_string(n)+","+std::to_string(clock_ms()-started)+"|"+sample;
 }
 }
 

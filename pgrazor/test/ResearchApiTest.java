@@ -221,8 +221,8 @@ public final class ResearchApiTest {
         ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
         String query = "observe?contract=pokemon.bag.v1";
         check(observationJob(jobs, registry, query).contains("verified_snapshot_unavailable"));
-        check(jobs.route(query + "&limit=2", true, "lease", () -> true, registry).code == 400);
-        check(jobs.route(query + "&fields=nickname", true, "lease", () -> true, registry).code == 400);
+        check(jobs.route(query + "&limit=11", true, "lease", () -> true, registry).code == 400);
+        check(jobs.route(query + "&fields=original_owner", true, "lease", () -> true, registry).code == 400);
         check(jobs.route(query + "&fields=cp.cp", true, "lease", () -> true, registry).code == 400);
         data.seeIdentity("a", true);
         bag.setLease(9);
@@ -244,13 +244,32 @@ public final class ResearchApiTest {
         String egg = observationJob(jobs, registry, query + "&fields=is_egg.cp.favorite");
         check(egg.contains("\"is_egg\":true") && egg.contains("\"cp\":null")
               && egg.contains("\"favorite\":null") && !egg.contains("\"instance_id\""));
+        clock.incrementAndGet();
+        String first = "20|25|390|15|0|9|1|0|0|42|10|20|-1|0|0.73|1234|00410022|0|0|2|1|-1|0";
+        String second = "21|-1|-1|-1|-1|-1|-1|1|-1|-1|-1|-1|-1|-1|-1|-1|-";
+        check(!bag.accept("103|0061|9|2|" + first + ";" + first));
+        check(!bag.accept("103|0061|9|1|" + first + ";" + second));
+        check(!bag.accept("103|0061|9|10,20|" + first));
+        StringBuilder sample = new StringBuilder(first).append(';').append(second);
+        for (int i = 22; i < 30; i++) sample.append(';').append(i).append(first.substring(2));
+        check(bag.accept("103|0061|9|10,7|" + sample));
+        String prefix = observationJob(jobs, registry, query + "&limit=5&fields=instance_id.nickname.hp.lucky.cp_multiplier");
+        check(prefix.contains("backing_list_prefix") && prefix.contains("\"instance_id\":\"20\"")
+              && prefix.contains("\"instance_id\":\"21\"") && prefix.contains("\"hp\":0")
+              && !prefix.contains("\"instance_id\":\"25\"") && prefix.contains("\"capture_elapsed_ms\":7")
+              && prefix.contains("\"lucky\":false") && prefix.contains("\"nickname\":null"));
+        String tail = observationJob(jobs, registry, query + "&limit=10&offset=1");
+        check(!tail.contains("\"instance_id\":\"20\"") && tail.contains("\"instance_id\":\"21\""));
+        clock.addAndGet(60_000);
+        check(bag.latest() == null);
         bag.setLease(10);
         check(bag.latest() == null);
+        data.seeIdentity("a", true);
         clock.incrementAndGet();
-        check(bag.accept("103|0061|10|10|15|25|390|15|0|9|1|0"));
+        check(bag.accept("60104|0061|10|10|15|25|390|15|0|9|1|0"));
         data.seeIdentity("b", true);
         check(bag.latest() == null);
-        check(!bag.accept("103|0061|10|10|15|25|390|15|0|9|1|0"));
+        check(!bag.accept("60104|0061|10|10|15|25|390|15|0|9|1|0"));
     }
 
     private static void progression() throws Exception {

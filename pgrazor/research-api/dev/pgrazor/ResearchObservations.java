@@ -22,14 +22,18 @@ final class ResearchObservations {
         pokestops_visited("integer"), distance_walked_km("decimal"), eggs_hatched("integer"),
         level("integer"), previous_level_xp_requirement("integer"), next_level_xp_requirement("integer"),
         instance_id("string"), species_id("integer"), cp("integer"), attack_iv("integer"),
-        defense_iv("integer"), stamina_iv("integer"), favorite("boolean"), is_egg("boolean");
+        defense_iv("integer"), stamina_iv("integer"), favorite("boolean"), is_egg("boolean"),
+        nickname("string"), hp("integer"), max_hp("integer"), fast_move_id("integer"),
+        charged_move_id("integer"), second_charged_move_id("integer"), lucky("boolean"),
+        cp_multiplier("decimal"), creation_time_ms("integer"), shiny("boolean"), form_id("integer"),
+        costume_id("integer"), gender_id("integer"), alignment_id("integer"), bread_mode_raw("integer");
 
         final String type;
         Field(String type) { this.type = type; }
 
         String value(Object value) {
-            if (value instanceof ResearchPokemonBag.Values) {
-                ResearchPokemonBag.Values pokemon = (ResearchPokemonBag.Values) value;
+            if (value instanceof ResearchPokemonBag.Row) {
+                ResearchPokemonBag.Row pokemon = (ResearchPokemonBag.Row) value;
                 switch (this) {
                     case instance_id: return "\"" + pokemon.instanceId + "\"";
                     case species_id: return String.valueOf(pokemon.species);
@@ -39,6 +43,22 @@ final class ResearchObservations {
                     case stamina_iv: return String.valueOf(pokemon.stamina);
                     case favorite: return String.valueOf(pokemon.favorite);
                     case is_egg: return Boolean.toString(pokemon.egg);
+                    case nickname: return pokemon.nickname == null ? "null"
+                        : "\"" + pokemon.nickname.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+                    case hp: return String.valueOf(pokemon.hp);
+                    case max_hp: return String.valueOf(pokemon.maxHp);
+                    case fast_move_id: return String.valueOf(pokemon.fastMove);
+                    case charged_move_id: return String.valueOf(pokemon.chargedMove);
+                    case second_charged_move_id: return String.valueOf(pokemon.secondChargedMove);
+                    case lucky: return String.valueOf(pokemon.lucky);
+                    case cp_multiplier: return String.valueOf(pokemon.cpMultiplier);
+                    case creation_time_ms: return String.valueOf(pokemon.creationTimeMs);
+                    case shiny: return String.valueOf(pokemon.shiny);
+                    case form_id: return String.valueOf(pokemon.form);
+                    case costume_id: return String.valueOf(pokemon.costume);
+                    case gender_id: return String.valueOf(pokemon.gender);
+                    case alignment_id: return String.valueOf(pokemon.alignment);
+                    case bread_mode_raw: return String.valueOf(pokemon.breadMode);
                     default: throw new AssertionError();
                 }
             }
@@ -98,7 +118,7 @@ final class ResearchObservations {
         out.append(',');
         describe(out, PROGRESSION, "account_owner_player_stats", progression.latest() != null);
         out.append(',');
-        describe(out, POKEMON, "verified_bag_backing_list_head", pokemonBag.latest() != null);
+        describe(out, POKEMON, "verified_bag_backing_list_prefix", pokemonBag.latest() != null);
         for (String id : CANDIDATES) {
             out.append(",{\"id\":\"").append(id)
                 .append("\",\"ready\":false,\"reason\":\"approved_source_unavailable\",\"fields\":{}}");
@@ -108,7 +128,7 @@ final class ResearchObservations {
 
     private static void describe(StringBuilder out, String id, String source, boolean ready) {
         out.append("{\"id\":\"").append(id).append("\",\"source\":\"").append(source)
-            .append("\",\"account_required\":true,\"max_samples\":1,\"max_result_bytes\":8192,")
+            .append("\",\"account_required\":true,\"max_samples\":").append(maxSamples(id)).append(",\"max_result_bytes\":8192,")
             .append("\"job_deadline_ms\":2500,\"coverage\":\"partial\",\"ready\":").append(ready)
             .append(",\"reason\":").append(ready ? "null" : "\"verified_snapshot_unavailable\"").append(",\"fields\":{");
         boolean comma = false;
@@ -126,37 +146,53 @@ final class ResearchObservations {
         String fields = args.remove("fields");
         String count = args.remove("limit");
         String offset = args.remove("offset");
-        if (!args.isEmpty() || id == null || count != null && !"1".equals(count)
-                || offset != null && !"0".equals(offset) && !"1".equals(offset)) throw new IllegalArgumentException();
+        if (!args.isEmpty() || id == null) throw new IllegalArgumentException();
+        int limit = bounded(count, 1, 1, maxSamples(id));
+        int start = bounded(offset, 0, 0, limit);
         Set<Field> projection = new LinkedHashSet<>();
         if (TRAINER.equals(id) || PROGRESSION.equals(id) || POKEMON.equals(id)) {
-            if (fields == null && POKEMON.equals(id)) fields = "instance_id.species_id.cp.attack_iv.defense_iv.stamina_iv.favorite.is_egg";
-            if (fields == null) throw new IllegalArgumentException();
-            for (String name : fields.split("\\.", -1)) {
+            if (fields == null && POKEMON.equals(id)) {
+                for (Field field : Field.values()) if (supported(id, field)) projection.add(field);
+            }
+            if (fields == null && projection.isEmpty()) throw new IllegalArgumentException();
+            if (fields != null) for (String name : fields.split("\\.", -1)) {
                 Field field = Field.valueOf(name);
                 if (!supported(id, field) || !projection.add(field)) throw new IllegalArgumentException();
             }
-            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : POKEMON.equals(id) ? pokemonBag.latest() : fresh(), "1".equals(offset), "verified_snapshot_unavailable");
+            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : POKEMON.equals(id) ? pokemonBag.latest() : fresh(), start, limit, "verified_snapshot_unavailable");
         }
         for (String candidate : CANDIDATES) {
             if (candidate.equals(id) && fields == null)
-                return new Capture(id, projection, null, false, "approved_source_unavailable");
+                return new Capture(id, projection, null, 0, 1, "approved_source_unavailable");
         }
         throw new IllegalArgumentException();
+    }
+
+    private static int maxSamples(String id) {
+        return POKEMON.equals(id) ? ResearchPokemonBag.MAX_SAMPLES : 1;
+    }
+
+    private static int bounded(String text, int fallback, int min, int max) {
+        if (text == null) return fallback;
+        if (!text.matches("[0-9]{1,2}")) throw new IllegalArgumentException();
+        int value = Integer.parseInt(text);
+        if (value < min || value > max) throw new IllegalArgumentException();
+        return value;
     }
 
     final class Capture {
         final LocalApiData.Snapshot<?> snapshot;
         private final String id, reason;
         private final Set<Field> projection;
-        private final boolean end;
+        private final int offset, limit;
 
         Capture(String id, Set<Field> projection, LocalApiData.Snapshot<?> snapshot,
-                boolean end, String reason) {
+                int offset, int limit, String reason) {
             this.id = id;
             this.projection = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(projection));
             this.snapshot = snapshot;
-            this.end = end;
+            this.offset = offset;
+            this.limit = limit;
             this.reason = reason;
         }
 
@@ -167,21 +203,33 @@ final class ResearchObservations {
         String json() {
             String prefix = "{\"contract\":\"" + id + "\",\"provenance\":\"registered_provider\",";
             if (snapshot == null) return prefix + "\"availability\":\"unavailable\",\"reason\":\"" + reason + "\"}";
+            java.util.List<?> rows;
             if (snapshot.data instanceof ResearchPokemonBag.Values) {
                 ResearchPokemonBag.Values pokemon = (ResearchPokemonBag.Values) snapshot.data;
-                prefix += "\"sample_scope\":\"backing_list_head\",\"collection_complete\":null,"
+                int end = Math.min(limit, pokemon.rows.size());
+                rows = pokemon.rows.subList(Math.min(offset, end), end);
+                String scope = limit == 1 ? "backing_list_head" : "backing_list_prefix";
+                prefix += "\"sample_scope\":\"" + scope + "\",\"collection_complete\":null,"
+                    + "\"captured_sample_size\":" + pokemon.rows.size() + ",\"capture_elapsed_ms\":" + pokemon.captureElapsedMs + ","
                     + "\"counts\":{\"total_collection_entries\":" + pokemon.entries
                     + ",\"owned_pokemon\":null,\"eggs\":null,\"incubated_eggs\":null,\"storage_capacity\":null},";
+            } else {
+                rows = offset == 0 ? java.util.Collections.singletonList(snapshot.data) : java.util.Collections.emptyList();
             }
-            if (end) return prefix + "\"availability\":\"observed\",\"coverage\":\"partial\",\"freshness\":\"fresh\","
-                + "\"next_offset\":null,\"items\":[]}";
-            StringBuilder fields = new StringBuilder();
-            for (Field field : projection) {
-                if (fields.length() > 0) fields.append(',');
-                fields.append('"').append(field).append("\":").append(field.value(snapshot.data));
+            StringBuilder items = new StringBuilder();
+            for (Object row : rows) {
+                if (items.length() > 0) items.append(',');
+                items.append('{');
+                boolean comma = false;
+                for (Field field : projection) {
+                    if (comma) items.append(',');
+                    items.append('"').append(field).append("\":").append(field.value(row));
+                    comma = true;
+                }
+                items.append('}');
             }
             return prefix + "\"availability\":\"observed\",\"coverage\":\"partial\",\"freshness\":\"fresh\",\"observed_at\":\""
-                + snapshot.observedUtc + "\",\"next_offset\":null,\"items\":[{" + fields + "}]}";
+                + snapshot.observedUtc + "\",\"next_offset\":null,\"items\":[" + items + "]}";
         }
     }
 }
