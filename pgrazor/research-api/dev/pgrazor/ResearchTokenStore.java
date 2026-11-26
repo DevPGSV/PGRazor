@@ -28,9 +28,11 @@ final class ResearchTokenStore implements ResearchApiSession.Store {
 
     @Override public ResearchApiSession.Saved load() throws IOException {
         try (DataInputStream in = new DataInputStream(file.openRead())) {
-            if (in.available() > 128 || in.readInt() != 1) throw new IOException("Invalid research token record");
+            if (in.available() > 128) throw new IOException("Invalid research token record");
+            int format = in.readInt();
+            if (format != 1 && format != 2) throw new IOException("Invalid research token record");
             ResearchApiSession.Saved saved = new ResearchApiSession.Saved(in.readUTF(), in.readLong(), in.readLong(), in.readLong());
-            if (in.read() != -1) throw new IOException("Invalid research token record");
+            if ((format == 1 && saved.boot < -1) || in.read() != -1) throw new IOException("Invalid research token record");
             return saved;
         } catch (FileNotFoundException missing) {
             if (file.getBaseFile().exists()) throw missing;
@@ -43,7 +45,7 @@ final class ResearchTokenStore implements ResearchApiSession.Store {
         FileOutputStream stream = file.startWrite();
         try {
             DataOutputStream out = new DataOutputStream(stream);
-            out.writeInt(1);
+            out.writeInt(2);
             out.writeUTF(saved == null ? "" : saved.token);
             out.writeLong(saved == null ? -1 : saved.boot);
             out.writeLong(saved == null ? 0 : saved.issued);

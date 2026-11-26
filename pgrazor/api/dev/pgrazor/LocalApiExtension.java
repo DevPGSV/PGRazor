@@ -14,6 +14,11 @@ interface LocalApiExtension {
 
     interface Access {
         boolean valid();
+        default boolean ifValid(Runnable write) {
+            if (!valid()) return false;
+            write.run();
+            return true;
+        }
         LocalApiRoutes.Reply get(String uri);
         default boolean acceptsPost(String uri) { return false; }
         default LocalApiRoutes.Reply post(String uri) {

@@ -8,9 +8,10 @@ import java.util.Base64;
 import java.util.List;
 import java.util.function.LongSupplier;
 
-/** Active lease is process-local. A saved credential can be reactivated locally on the same boot. */
+/** Active lease is process-local. Saved credentials and activation have separate lifetimes. */
 final class ResearchApiSession {
-    static final int DEFAULT_MINUTES = 30;
+    static final int DEFAULT_MINUTES = 0;
+    static final long PERMANENT_BOOT = -2;
     private final LongSupplier clock;
     private final LongSupplier accountEpoch;
     interface Store {
@@ -69,21 +70,23 @@ final class ResearchApiSession {
 
     synchronized void listenerChanged(boolean running) {
         listener = running;
-        if (!running) revoke();
+        if (!running) deactivate();
     }
 
     synchronized boolean listener() { return listener; }
 
     synchronized void accountVerified(String id) {
-        if (lastVerifiedAccount != null && !lastVerifiedAccount.equals(id)) revoke();
+        if (lastVerifiedAccount != null && !lastVerifiedAccount.equals(id)) deactivate();
         lastVerifiedAccount = id;
     }
+
+    synchronized void deactivate() { lease = null; }
 
     synchronized boolean storageFailed() { return storageFailed; }
 
     synchronized void activate(int minutes) {
         if (!listener || current() != null) return;
-        if (!loaded && store != null && boot >= 0) {
+        if (!loaded && store != null) {
             loaded = true;
             try {
                 saved = store.load();
@@ -94,16 +97,17 @@ final class ResearchApiSession {
             }
         }
         long now = clock.getAsLong();
-        if (saved != null && saved.boot == boot && saved.issued >= 0 && saved.issued <= now
-                && saved.deadline > now && saved.deadline - saved.issued <= 86_400_000L
-                && saved.token.matches("[A-Za-z0-9_-]{43}")) {
+        if (saved != null && saved.token.matches("[A-Za-z0-9_-]{43}")
+                && (saved.boot == PERMANENT_BOOT && saved.issued == 0 && saved.deadline == Long.MAX_VALUE
+                    || (boot >= 0 || store == null) && saved.boot == boot && saved.issued >= 0
+                        && saved.issued <= now && saved.deadline > now && saved.deadline - saved.issued <= 86_400_000L)) {
             lease = new Lease(saved.token, saved.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString());
         } else issue(minutes);
     }
 
     synchronized void issue(int minutes) {
         switch (minutes) {
-            case 15: case 30: case 60: case 120: case 360: case 720: case 1440: break;
+            case 0: case 15: case 30: case 60: case 120: case 360: case 720: case 1440: break;
             default: throw new IllegalArgumentException("Unsupported research token lifetime");
         }
         if (!listener) return;
@@ -111,7 +115,8 @@ final class ResearchApiSession {
         new SecureRandom().nextBytes(bytes);
         long now = clock.getAsLong();
         Saved next = new Saved(Base64.getUrlEncoder().withoutPadding().encodeToString(bytes),
-            boot, now, now + minutes * 60_000L);
+            minutes == 0 ? PERMANENT_BOOT : boot, minutes == 0 ? 0 : now,
+            minutes == 0 ? Long.MAX_VALUE : now + minutes * 60_000L);
         lease = null;
         if (!persist(next)) return;
         lease = new Lease(next.token, next.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString());
@@ -130,7 +135,7 @@ final class ResearchApiSession {
         saved = null;
         loaded = true;
         storageFailed = false;
-        if (store != null && (boot >= 0 || next == null)) {
+        if (store != null) {
             try {
                 store.save(next);
             } catch (IOException | RuntimeException failure) {
@@ -149,13 +154,18 @@ final class ResearchApiSession {
                 || (saved != null && clock.getAsLong() < saved.issued)
                 || accountEpoch.getAsLong() != lease.account)) {
             lease = null;
-            saved = null;
         }
         return lease;
     }
 
     synchronized long remaining(Lease expected) {
-        return expected == current() && expected != null ? Math.max(0, expected.deadline - clock.getAsLong()) : 0;
+        return expected == current() && expected != null ? (expected.deadline == Long.MAX_VALUE ? -1 : Math.max(0, expected.deadline - clock.getAsLong())) : 0;
+    }
+
+    synchronized boolean ifActive(Lease expected, Runnable write) {
+        if (current() != expected) return false;
+        write.run();
+        return true;
     }
 
     synchronized Lease authenticate(List<String> headers) {

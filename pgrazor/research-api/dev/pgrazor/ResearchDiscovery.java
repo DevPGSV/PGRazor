@@ -10,6 +10,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Structural observations only. Each result belongs to the Research lease that submitted it. */
 final class ResearchDiscovery {
@@ -62,6 +63,7 @@ final class ResearchDiscovery {
         String result = "null";
         String error = "null";
         Runnable task;
+        LocalApiData.Snapshot<?> snapshot;
 
         Job(String owner, BooleanSupplier valid, long now) {
             this.owner = owner;
@@ -95,16 +97,29 @@ final class ResearchDiscovery {
     }
 
     synchronized LocalApiRoutes.Reply route(String path, boolean post, String owner, BooleanSupplier valid) {
+        return route(path, post, owner, valid, null);
+    }
+
+    synchronized LocalApiRoutes.Reply route(String path, boolean post, String owner, BooleanSupplier valid,
+            ResearchObservations observations) {
         reap();
         int split = path.indexOf('?');
         String endpoint = split < 0 ? path : path.substring(0, split);
-        if (!(endpoint.equals("discover") || endpoint.equals("job") || endpoint.equals("cancel"))) {
+        if (!(endpoint.equals("discover") || endpoint.equals("job") || endpoint.equals("cancel") || endpoint.equals("observe"))) {
             return error(404, "NOT_FOUND");
         }
         if (post != !endpoint.equals("job")) return error(405, "METHOD_NOT_ALLOWED");
         try {
             Map<String, String> args = params(split < 0 ? "" : path.substring(split + 1));
-            if (endpoint.equals("discover")) return submit(new Query(args), owner, valid);
+            if (endpoint.equals("discover")) {
+                Query query = new Query(args);
+                return submit(() -> observer.observe(query), owner, valid, null);
+            }
+            if (endpoint.equals("observe") && observations != null) {
+                ResearchObservations.Capture capture = observations.prepare(args);
+                return submit(capture::json, owner, () -> valid.getAsBoolean() && capture.current(), capture.snapshot);
+            }
+            if (endpoint.equals("observe")) return error(404, "NOT_FOUND");
             String id = args.remove("id");
             if (id == null || !args.isEmpty()) return error(400, "INVALID_QUERY");
             Job job = jobs.get(id);
@@ -112,13 +127,15 @@ final class ResearchDiscovery {
             if (post) {
                 if (job.open()) cancel(job, "cancelled", "cancelled_by_client");
             }
-            return new LocalApiRoutes.Reply(200, job.json(!post));
+            return new LocalApiRoutes.Reply(200, job.json(!post),
+                job.snapshot == null ? null : job.snapshot.session, job.snapshot);
         } catch (IllegalArgumentException invalid) {
             return error(400, "INVALID_QUERY");
         }
     }
 
-    private LocalApiRoutes.Reply submit(Query query, String owner, BooleanSupplier valid) {
+    private LocalApiRoutes.Reply submit(Supplier<String> observation, String owner, BooleanSupplier valid,
+            LocalApiData.Snapshot<?> snapshot) {
         if (!valid.getAsBoolean()) return error(401, "UNAUTHORIZED");
         if (jobs.size() >= MAX_JOBS) {
             Iterator<Job> iterator = jobs.values().iterator();
@@ -131,7 +148,8 @@ final class ResearchDiscovery {
             if (jobs.size() >= MAX_JOBS) return error(429, "JOB_LIMIT");
         }
         Job job = new Job(owner, valid, clock.getAsLong());
-        job.task = () -> execute(job, query);
+        job.snapshot = snapshot;
+        job.task = () -> execute(job, observation);
         jobs.put(job.id, job);
         try {
             worker.execute(job.task);
@@ -142,7 +160,7 @@ final class ResearchDiscovery {
         }
     }
 
-    private void execute(Job job, Query query) {
+    private void execute(Job job, Supplier<String> observation) {
         synchronized (this) {
             reap();
             if (!job.open() || !job.valid.getAsBoolean()) return;
@@ -150,7 +168,7 @@ final class ResearchDiscovery {
         }
         String result;
         try {
-            result = observer.observe(query);
+            result = observation.get();
         } catch (LinkageError unavailable) {
             result = "{\"availability\":\"unavailable\",\"reason\":\"native_bridge_unavailable\",\"provenance\":\"il2cpp_runtime\"}";
         } catch (RuntimeException failure) {
@@ -220,7 +238,8 @@ final class ResearchDiscovery {
         for (String entry : query.split("&", -1)) {
             String[] pair = entry.split("=", -1);
             if (pair.length != 2 || !pair[0].matches("[a-z]{1,10}")
-                    || !pair[1].matches("[A-Za-z0-9_.`-]{1,96}")
+                    || !pair[1].matches("[A-Za-z0-9_.`-]{1,128}")
+                    || (!pair[0].equals("fields") && pair[1].length() > 96)
                     || args.put(pair[0], pair[1]) != null) throw new IllegalArgumentException();
         }
         return args;

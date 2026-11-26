@@ -119,6 +119,16 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(failure.exception.status, 401)
             self.assertEqual(status.call_count, 1)
 
+    def test_observation_projection_uses_registered_job(self):
+        client = Client("http://127.0.0.1:8765", TOKEN)
+        with patch.object(client, "_request", return_value={"id": "job", "state": "queued"}) as request:
+            job = client.submit_observation("trainer.snapshot.v1", fields=("xp", "eggs_hatched"))
+            self.assertEqual(job.state, "queued")
+            request.assert_called_once_with("live/observe", "POST", contract="trainer.snapshot.v1",
+                                            fields="xp.eggs_hatched", limit=1, offset=0)
+        with self.assertRaises(ResearchError):
+            client.submit_observation("trainer.snapshot.v1", fields=("xp", "xp"))
+
     def test_nonadvancing_cursor_rejected(self):
         client = Client("http://127.0.0.1:8765", TOKEN)
         job = Job("id", "completed", None, {"availability": "observed", "next_offset": 2})

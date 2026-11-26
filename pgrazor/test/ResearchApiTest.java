@@ -13,6 +13,7 @@ public final class ResearchApiTest {
 
     public static void main(String[] args) throws Exception {
         persistence();
+        observations();
         discovery();
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
@@ -37,7 +38,7 @@ public final class ResearchApiTest {
             check(request(port, STATUS, PROD).startsWith("HTTP/1.1 401"));
             session.issue(ResearchApiSession.DEFAULT_MINUTES);
             ResearchApiSession.Lease initial = session.current();
-            check(initial != null && session.remaining(initial) == 1_800_000);
+            check(initial != null && session.remaining(initial) == -1);
             check(request(port, STATUS, initial.token).contains("\"ready\":true"));
             check(request(port, "/research/v1/runtime", initial.token).contains("account_unavailable"));
             check(new ResearchMetadata(null).get("runtime").body.contains("runtime_unavailable"));
@@ -209,6 +210,45 @@ public final class ResearchApiTest {
         }
     }
 
+    private static void observations() throws Exception {
+        AtomicLong clock = new AtomicLong(100);
+        LocalApiData data = new LocalApiData(clock::get, clock::get);
+        data.enable();
+        ResearchObservations contracts = new ResearchObservations(data);
+        ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
+        check(contracts.status().body.contains("approved_source_unavailable"));
+        String query = "observe?contract=trainer.snapshot.v1&fields=xp.name";
+        check(jobs.route(query + "&limit=2", true, "lease", () -> true, contracts).code == 400);
+        check(jobs.route(query + ".unknown", true, "lease", () -> true, contracts).code == 400);
+        check(jobs.route(query + ".xp", true, "lease", () -> true, contracts).code == 400);
+        String missing = observationJob(jobs, contracts, query);
+        check(missing.contains("verified_snapshot_unavailable"));
+        check(observationJob(jobs, contracts, "observe?contract=pokemon.bag.v1").contains("approved_source_unavailable"));
+        data.seeIdentity("acct", true);
+        clock.incrementAndGet();
+        check(LocalApiTrainer.accept(data, "101|0061006300630074|0050"));
+        String fresh = observationJob(jobs, contracts, query);
+        check(fresh.contains("\"xp\":null") && fresh.contains("\"name\":\"P\"") && fresh.contains("partial"));
+        check(observationJob(jobs, contracts, query + "&offset=1").contains("\"items\":[]"));
+        String id = fresh.split("\"id\":\"")[1].split("\"")[0];
+        check(jobs.route("job?id=" + id, false, "different", () -> true).code == 404);
+        clock.addAndGet(LocalApiData.SNAPSHOT_MAX_AGE_MS + 1);
+        check(jobs.route("job?id=" + id, false, "lease", () -> true).code == 404);
+    }
+
+    private static String observationJob(ResearchDiscovery jobs, ResearchObservations contracts, String query)
+            throws Exception {
+        LocalApiRoutes.Reply reply = jobs.route(query, true, "lease", () -> true, contracts);
+        check(reply.code == 202);
+        String id = reply.body.split("\"id\":\"")[1].split("\"")[0];
+        for (int i = 0; i < 100; i++) {
+            String status = jobs.route("job?id=" + id, false, "lease", () -> true).body;
+            if (status.contains("\"state\":\"completed\"")) return status;
+            Thread.sleep(5);
+        }
+        throw new AssertionError("Observation did not complete");
+    }
+
     private static void persistence() throws Exception {
         AtomicLong clock = new AtomicLong(100);
         class Store implements ResearchApiSession.Store {
@@ -237,7 +277,7 @@ public final class ResearchApiTest {
         restarted.rotate(restarted.current(), 15);
         check(!restarted.current().token.equals(initial.token));
         restarted.accountVerified("changed");
-        check(store.saved == null && restarted.current() == null);
+        check(store.saved != null && restarted.current() == null);
         restarted.activate(15);
         String old = restarted.current().token;
         clock.set(restarted.current().deadline);
@@ -257,7 +297,21 @@ public final class ResearchApiTest {
         backwards.activate(15);
         check(!backwards.current().token.equals(beforeRegression));
         backwards.listenerChanged(false);
-        check(store.saved == null);
+        check(store.saved != null && backwards.current() == null);
+        backwards.listenerChanged(true);
+        backwards.issue(0);
+        String permanent = backwards.current().token;
+        ResearchApiSession nextBoot = new ResearchApiSession(clock::get, () -> 0, store, 9);
+        check(nextBoot.current() == null);
+        nextBoot.listenerChanged(true);
+        check(nextBoot.current() == null);
+        nextBoot.activate(0);
+        check(nextBoot.current().token.equals(permanent));
+        nextBoot.deactivate();
+        nextBoot.activate(0);
+        check(nextBoot.current().token.equals(permanent));
+        nextBoot.revoke();
+        check(store.saved == null && nextBoot.current() == null);
         store.corrupt = true;
         ResearchApiSession corrupt = new ResearchApiSession(clock::get, () -> 0, store, 8);
         corrupt.listenerChanged(true);

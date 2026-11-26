@@ -19,7 +19,8 @@ _MAX_RESPONSE = 9216
 class ResearchStatus(TypedDict, total=False):
     api_version: str
     ready: bool
-    remaining_ms: int
+    remaining_ms: int | None
+    expires: bool
     features: dict[str, bool]
     research_generation: str
 
@@ -103,8 +104,9 @@ class Client:
 
     def _request(self, endpoint: str, method="GET", *, timeout=None, **arguments) -> dict[str, Any]:
         pairs = [(key, str(value)) for key, value in arguments.items() if value is not None]
-        if any(not _PARAM.fullmatch(key) or not _PARAM.fullmatch(value) or self._token in value
-               for key, value in pairs):
+        if any(not _PARAM.fullmatch(key) or self._token in value
+               or not (_PARAM.fullmatch(value) or key == "fields"
+                       and re.fullmatch(r"[a-z_.]{1,128}", value)) for key, value in pairs):
             raise ResearchError("Invalid Research parameter")
         query = "&".join(f"{key}={value}" for key, value in pairs)
         path = self.base + "/research/v1/" + endpoint + ("?" + query if query else "")
@@ -158,6 +160,18 @@ class Client:
 
     def validate_contract(self, contract: str) -> dict[str, Any]:
         return self._request("validate", contract=contract)
+
+    def observation_contracts(self) -> dict[str, Any]:
+        return self._request("observations/contracts")
+
+    def submit_observation(self, contract: str, *, fields: tuple[str, ...] = (), limit: int = 1,
+                           offset: int = 0) -> Job:
+        if any(not isinstance(name, str) or not re.fullmatch(r"[a-z_]{1,32}", name) for name in fields):
+            raise ResearchError("Invalid observation projection")
+        if len(set(fields)) != len(fields):
+            raise ResearchError("Duplicate observation field")
+        return Job.parse(self._request("live/observe", "POST", contract=contract,
+                                      fields=".".join(fields) if fields else None, limit=limit, offset=offset))
 
     def submit(self, query: DiscoveryQuery) -> Job:
         return Job.parse(self._request("live/discover", "POST", **query.parameters()))

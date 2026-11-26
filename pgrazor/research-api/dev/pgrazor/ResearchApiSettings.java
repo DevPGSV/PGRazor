@@ -13,8 +13,8 @@ import java.util.Date;
 import java.util.List;
 
 final class ResearchApiSettings implements LocalApiExtension.Page {
-    private static final int[] MINUTES = {15, 30, 60, 120, 360, 720, 1440};
-    private static final String[] LABELS = {"15 minutes", "30 minutes", "1 hour", "2 hours", "6 hours", "12 hours", "24 hours"};
+    private static final int[] MINUTES = {0, 15, 30, 60, 120, 360, 720, 1440};
+    private static final String[] LABELS = {"Never expires", "15 minutes", "30 minutes", "1 hour", "2 hours", "6 hours", "12 hours", "24 hours"};
     private final Activity activity;
     private final ResearchApiSession session;
     private final Switch enabled;
@@ -26,7 +26,7 @@ final class ResearchApiSettings implements LocalApiExtension.Page {
     private final Button rotate;
     private final Button revoke;
     private final LinearLayout links;
-    private int selected = 1;
+    private int selected;
     private boolean painting;
     private boolean revealed;
     private ResearchApiSession.Lease displayed;
@@ -45,7 +45,7 @@ final class ResearchApiSettings implements LocalApiExtension.Page {
         enabled.setOnCheckedChangeListener((v, checked) -> {
             if (painting) return;
             if (checked) session.activate(MINUTES[selected]);
-            else session.revoke();
+            else session.deactivate();
             refresh(bases);
         });
         status = note(parent, "Disabled");
@@ -87,7 +87,9 @@ final class ResearchApiSettings implements LocalApiExtension.Page {
         long remaining = session.remaining(active);
         String label = running ? "Disabled · No active token" : "Disabled · Start HTTP API first";
         if (session.storageFailed()) label = "Disabled · Could not access private token storage";
-        if (active != null) {
+        if (active != null && remaining < 0) {
+            label = "Active · Never expires";
+        } else if (active != null) {
             long seconds = (remaining + 999) / 1000;
             label = "Active · " + seconds / 60 + " min " + seconds % 60 + " s remaining · Expires around "
                 + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(System.currentTimeMillis() + remaining));

@@ -199,6 +199,17 @@ final class LocalApiServer implements AutoCloseable {
                 ctx.close();
                 return;
             }
+            Runnable write = () -> writeReply(ctx, reply, status, body);
+            if (access == null) write.run();
+            else if (!access.ifValid(write)) {
+                ctx.close();
+                return;
+            }
+            ctx.flush();
+        }
+
+        private void writeReply(ChannelHandlerContext ctx, LocalApiRoutes.Reply reply,
+                HttpResponseStatus status, String body) {
             FullHttpResponse response = response(status, body);
             if (!routes.publish(reply, () -> ctx.write(response).addListener(ChannelFutureListener.CLOSE))) {
                 response.release();
@@ -206,7 +217,6 @@ final class LocalApiServer implements AutoCloseable {
                 ctx.write(response(HttpResponseStatus.valueOf(expired.code), expired.body))
                     .addListener(ChannelFutureListener.CLOSE);
             }
-            ctx.flush();
         }
 
         private static FullHttpResponse response(HttpResponseStatus status, String body) {

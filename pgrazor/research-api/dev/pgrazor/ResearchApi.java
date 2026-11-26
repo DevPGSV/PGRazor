@@ -13,11 +13,12 @@ final class ResearchApi implements LocalApiExtension {
     private static final String PREFIX = "/research/v1/";
     private static final String FEATURES = "{\"production_api\":true,\"websocket\":true,\"research_api\":true,\"research_discovery\":true}";
     private static final String CAPABILITIES = "{\"api_version\":\"1\",\"features\":" + FEATURES
-        + ",\"operations\":[\"status\",\"capabilities\",\"events\",\"runtime\",\"assemblies\",\"types\",\"type\",\"contracts\",\"validate\",\"diagnostics\",\"live/discover\",\"live/job\",\"live/cancel\"],\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]}";
+        + ",\"operations\":[\"status\",\"capabilities\",\"events\",\"runtime\",\"assemblies\",\"types\",\"type\",\"contracts\",\"validate\",\"diagnostics\",\"live/discover\",\"live/job\",\"live/cancel\",\"live/observe\",\"observations/contracts\"],\"topics\":[\"research.status\",\"research.diagnostics\",\"research.jobs\"]}";
     private final ResearchApiSession session;
 
     private final ResearchMetadata metadata;
     private final ResearchDiscovery discovery;
+    private final ResearchObservations observations;
 
     ResearchApi(Application app, LocalApiData data) {
         this(new ResearchApiSession(SystemClock::elapsedRealtime, data::eventEpoch,
@@ -33,6 +34,7 @@ final class ResearchApi implements LocalApiExtension {
         this.discovery = discovery;
         this.session = session;
         metadata = new ResearchMetadata(data);
+        observations = new ResearchObservations(data);
     }
 
     @Override public void accountVerified(String id) { session.accountVerified(id); }
@@ -51,17 +53,20 @@ final class ResearchApi implements LocalApiExtension {
         ResearchApiSession.Lease lease = session.authenticate(authorization);
         return lease == null ? null : new Access() {
             @Override public boolean valid() { return session.current() == lease; }
+            @Override public boolean ifValid(Runnable write) { return session.ifActive(lease, write); }
 
             @Override public boolean acceptsPost(String uri) {
                 return uri.equals(PREFIX + "live/discover") || uri.startsWith(PREFIX + "live/discover?")
+                    || uri.equals(PREFIX + "live/observe") || uri.startsWith(PREFIX + "live/observe?")
                     || uri.equals(PREFIX + "live/cancel") || uri.startsWith(PREFIX + "live/cancel?");
             }
 
             @Override public LocalApiRoutes.Reply post(String uri) {
-                return discovery.route(uri.substring((PREFIX + "live/").length()), true, lease.id, this::valid);
+                return discovery.route(uri.substring((PREFIX + "live/").length()), true, lease.id, this::valid, observations);
             }
 
             @Override public LocalApiRoutes.Reply get(String uri) {
+                if (uri.equals(PREFIX + "observations/contracts")) return observations.status();
                 if (uri.startsWith(PREFIX + "live/")) {
                     return discovery.route(uri.substring((PREFIX + "live/").length()), false, lease.id, this::valid);
                 }
@@ -70,7 +75,8 @@ final class ResearchApi implements LocalApiExtension {
                 if ((PREFIX + "status").equals(uri)) {
                     return new LocalApiRoutes.Reply(200, "{\"api_version\":\"1\",\"features\":" + FEATURES
                         + ",\"ready\":true,\"research_generation\":\"" + lease.id
-                        + "\",\"remaining_ms\":" + session.remaining(lease) + "}");
+                        + "\",\"remaining_ms\":" + (lease.deadline == Long.MAX_VALUE ? "null" : session.remaining(lease))
+                        + ",\"expires\":" + (lease.deadline != Long.MAX_VALUE) + "}");
                 }
                 return uri.startsWith(PREFIX) ? metadata.get(uri.substring(PREFIX.length()))
                     : new LocalApiRoutes.Reply(404, "{\"error\":\"NOT_FOUND\"}");
