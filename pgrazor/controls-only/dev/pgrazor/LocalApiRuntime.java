@@ -8,6 +8,7 @@ final class LocalApiRuntime {
     static boolean trainerRequested() { return false; }
     static void accountObserved(String id, boolean verified) {}
     static void identityLost() {}
+    static void productionPokemonObserved(String packet) {}
     static void pokemonBagObserved(String packet) {}
 
     static void progressionObserved(String packet) {}

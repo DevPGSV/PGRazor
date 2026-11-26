@@ -7,17 +7,16 @@ import re
 
 from .client import ResearchError
 
-NORMALIZATION_VERSION = "pgr-pokemon-en-v1"
-GAME_VERSION = "0.437.0"
 _SPECIES = Path(__file__).resolve().parents[3] / "pgrazor/assets/map-icons/pokemon-names.json"
+_PROFILE = json.loads(_SPECIES.with_name("pokemon-max-v1.json").read_bytes())
+NORMALIZATION_VERSION = _PROFILE["version"]
+GAME_VERSION = _PROFILE["game_version"]
 _SPECIES_SHA = "769d9d90207def665020023acaa134851228d057b31ceafc2ab9aad42f8d3d5c"
 _MOVES = {
     "pvp_fast_moves.json": "0b3921f424d42adef758cfc5b249cab9f96dae420a9318cea5bdabb67d32877c",
     "pvp_charged_moves.json": "dde3ebc9f45389dbdc1a58533ac627845b638c897b1a214807e22b07b4d7c46a",
 }
-_MAX_MODES = {0: ("normal", False, False, False),
-              1: ("dynamax", True, False, True),
-              2: ("gigantamax", False, True, True)}
+_MAX_MODES = {int(key): values for key, values in _PROFILE["modes"].items()}
 _CATEGORIES = ("normal", "dynamax", "gigantamax", "special_max", "unknown", "not_applicable")
 
 
@@ -61,12 +60,13 @@ def _category(row):
         return "unknown", None, None, None, "unavailable"
     if type(mode) is not int:
         return "unknown", None, None, None, "unverified_mode"
-    if mode == 4 and (species, row.get("form_id")) == (890, 2581):
+    if mode == _PROFILE["special_mode"] and (species, row.get("form_id")) == (
+            _PROFILE["special_species"], _PROFILE["special_form"]):
         return "special_max", False, False, True, "owner_ui_eternatus_v1"
     if mode in _MAX_MODES:
         category, dynamax, gigantamax, eligible = _MAX_MODES[mode]
         # Eligibility of Crowned forms is independently documented. Their raw mode is unverified.
-        if mode == 0 and species in (888, 889, 890):
+        if mode == 0 and species in _PROFILE["normal_eligibility_unknown"]:
             eligible = None
         return category, dynamax, gigantamax, eligible, "owner_ui_v1"
     return "unknown", None, None, None, "unverified_mode"

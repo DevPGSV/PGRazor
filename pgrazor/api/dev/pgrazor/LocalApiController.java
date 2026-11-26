@@ -26,8 +26,10 @@ final class LocalApiController {
     private final Store store;
     private final LocalApiData data;
     private final LocalApiExtension extension;
+    private final LocalApiPokemon pokemon;
     private final Object stateLock = new Object();
-    private volatile long generation;
+    // Zero is reserved for inactive collection demand. The first listener must have a live lease.
+    private volatile long generation = 1;
     private LocalApiServer active;
     private LocalApiConfig bound;
     private Future<?> retiring;
@@ -41,6 +43,11 @@ final class LocalApiController {
     }
 
     LocalApiController(Store store, LocalApiData data, LocalApiExtension extension) {
+        this(store, data, extension, null);
+    }
+
+    LocalApiController(Store store, LocalApiData data, LocalApiExtension extension, LocalApiPokemon pokemon) {
+        this.pokemon = pokemon;
         this.store = store;
         this.data = data;
         this.extension = extension;
@@ -96,12 +103,13 @@ final class LocalApiController {
         if (previous != null) previous.awaitUninterruptibly();
         if (generation != epoch) throw new IOException("Local API start was cancelled");
         LocalApiServer bound = LocalApiServer.start(settings.config.socketAddress(), settings.token,
-            LocalApiRoutes.production(data), () -> generation == epoch, extension);
+            LocalApiRoutes.production(data, pokemon), () -> generation == epoch, extension);
         synchronized (stateLock) {
             if (generation == epoch) {
                 retiring = null;
                 active = bound;
                 this.bound = settings.config;
+                if (pokemon != null) pokemon.listener(epoch);
                 data.enable();
                 if (extension != null) extension.listenerChanged(true);
                 return;
@@ -140,6 +148,7 @@ final class LocalApiController {
         generation++;
         if (extension != null) extension.listenerChanged(false);
         data.disable();
+        if (pokemon != null) pokemon.listener(0);
         if (active != null) {
             retiring = active.stopAsync();
             active = null;

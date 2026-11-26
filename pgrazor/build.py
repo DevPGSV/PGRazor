@@ -68,9 +68,10 @@ def map_icon_assets():
                 raise ValueError("Map icon escapes asset directory")
             if path.is_file():
                 icons.setdefault(path.name, path)
-        names = source / 'pokemon-names.json'
-        if names.is_file() and not names.is_symlink() and names.resolve().is_relative_to(source.resolve()):
-            icons.setdefault(names.name, names)
+        for filename in ('pokemon-names.json', 'pokemon-max-v1.json'):
+            asset = source / filename
+            if asset.is_file() and not asset.is_symlink() and asset.resolve().is_relative_to(source.resolve()):
+                icons.setdefault(filename, asset)
     return icons
 
 def feed_icon_assets():
@@ -160,8 +161,9 @@ def main():
         classpath = os.pathsep.join(map(str, [ANDROID, classes, *jars]))
         run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
             '-classpath', classpath, '-d', BUILD/'tests',
-            *[ROOT/'test'/name for name in ('HttpPreviewServerTest.java', 'LocalApiWebSocketTest.java', 'ResearchApiTest.java')])
+            *[ROOT/'test'/name for name in ('HttpPreviewServerTest.java', 'LocalApiWebSocketTest.java', 'ResearchApiTest.java', 'LocalApiPokemonTest.java')])
         run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.ResearchApiTest')
+        run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.LocalApiPokemonTest')
     if not args.nonroot:
         build_preview(classes, jar, jars)
 
@@ -206,8 +208,8 @@ def build_preview(classes, controls_jar, jars):
         '-classpath', str(ANDROID)+os.pathsep+classpath, '-d', preview_classes, *preview_sources)
     run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
         '-classpath', classpath, '-d', BUILD/'tests',
-        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java', ROOT/'test/LocalApiTrainerTest.java', ROOT/'test/LocalApiWebSocketTest.java')
-    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest', 'LocalApiTrainerTest', 'LocalApiWebSocketTest'):
+        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java', ROOT/'test/LocalApiTrainerTest.java', ROOT/'test/LocalApiWebSocketTest.java', ROOT/'test/LocalApiPokemonTest.java')
+    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest', 'LocalApiTrainerTest', 'LocalApiWebSocketTest', 'LocalApiPokemonTest'):
         run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.'+test)
     preview_jar = classes/'preview.jar'
     class_jar(preview_jar, preview_classes)

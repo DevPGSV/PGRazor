@@ -9,6 +9,7 @@
 
 #include "runtime_bootstrap.h"
 #include "research-discovery/progression.h"
+#include "session_stats.h"
 
 namespace {
 std::atomic<uint64_t> progressionLease{0};
@@ -366,7 +367,7 @@ uint64_t pgr_research_progression_lease(uint64_t now_ms) noexcept {
 }
 
 static void JNICALL setExportRequest(JNIEnv *, jclass, jlong request, jlong lease, jlong deadline) {
-    pgr_research_export_request(request, lease, deadline);
+    pgr_collection_request(true, request, lease, deadline);
 }
 
 int pgrazor_register_research_discovery(JNIEnv *env) {

@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Immutable, bounded prefix copied from one backing list observation. */
-final class ResearchPokemonBag {
+final class LocalApiPokemonBag {
     static final int MAX_SAMPLES = 10;
 
     static final class Row {
@@ -62,6 +62,33 @@ final class ResearchPokemonBag {
                 throw new IllegalArgumentException();
         }
 
+        static final String[] KEYS = ("instance_id species_id cp attack_iv defense_iv stamina_iv favorite is_egg "
+            + "nickname hp max_hp fast_move_id charged_move_id second_charged_move_id lucky cp_multiplier "
+            + "creation_time_ms shiny form_id costume_id gender_id alignment_id bread_mode_raw").split(" ");
+
+        String jsonFields() { return jsonFields(null); }
+
+        String jsonFields(Set<String> selected) {
+            Object[] values = {quote(instanceId), species, cp, attack, defense, stamina, favorite, egg,
+                quote(nickname), hp, maxHp, fastMove, chargedMove, secondChargedMove, lucky, cpMultiplier,
+                creationTimeMs, shiny, form, costume, gender, alignment, breadMode};
+            StringBuilder result = new StringBuilder();
+            appendFields(result, KEYS, values, selected);
+            return result.toString();
+        }
+
+        static void appendFields(StringBuilder result, String[] keys, Object[] values, Set<String> selected) {
+            for (int i = 0; i < keys.length; i++) {
+                if (selected != null && !selected.contains(keys[i])) continue;
+                if (result.length() != 0) result.append(',');
+                result.append('"').append(keys[i]).append("\":").append(values[i]);
+            }
+        }
+
+        static String quote(String value) {
+            return value == null ? "null" : "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        }
+
         private static String decodeNickname(String hex) {
             if (hex.equals("-")) return null;
             if (hex.isEmpty()) return "";
@@ -103,7 +130,7 @@ final class ResearchPokemonBag {
     private final LocalApiData.Slot<Values> slot;
     private volatile long activeLease;
 
-    ResearchPokemonBag(LocalApiData data) {
+    LocalApiPokemonBag(LocalApiData data) {
         this.data = data;
         slot = data == null ? null : data.slot();
     }

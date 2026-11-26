@@ -10,29 +10,30 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /** Retains one private capture per active Research lease. All rows are copied from native packets. */
-final class ResearchPokemonExport {
+final class LocalApiPokemonCapture {
     private static final int ROWS = 2048, SLICE_ROWS = 32, BYTES = 768 * 1024;
     private static final long DEADLINE = 35_000, RETENTION = 120_000;
     private static final AtomicLong SEQUENCE = new AtomicLong();
 
     interface Demand { void set(long revision, long lease, long deadline); }
 
-    private static final class Capture {
+    static final class Capture {
         final String id = UUID.randomUUID().toString();
         final long revision = SEQUENCE.incrementAndGet();
         final String account;
-        final long deadline;
+        final long deadline, lease;
         final int pageSize;
-        final List<ResearchPokemonBag.Row> rows = new ArrayList<>();
+        final List<LocalApiPokemonBag.Row> rows = new ArrayList<>();
         final Set<String> ids = new HashSet<>();
         String state = "capturing", reason;
         long started = -1, finished, expires, sliceTotal;
         Instant startedUtc, finishedUtc;
         int expected, bytes, slices, maxSlice, lastSlice, eggs;
 
-        Capture(String account, long deadline, int pageSize) {
+        Capture(String account, long deadline, int pageSize, long lease) {
             this.account = account;
             this.deadline = deadline;
+            this.lease = lease;
             this.pageSize = pageSize;
         }
     }
@@ -44,7 +45,7 @@ final class ResearchPokemonExport {
     private long lease;
     private long attempts, completed, discarded, cancelled, deadlines, structuralChanges;
 
-    ResearchPokemonExport(LocalApiData data, LongSupplier clock, LongSupplier wall, Demand demand) {
+    LocalApiPokemonCapture(LocalApiData data, LongSupplier clock, LongSupplier wall, Demand demand) {
         this.data = data;
         this.clock = clock;
         this.wall = wall;
@@ -96,7 +97,7 @@ final class ResearchPokemonExport {
             }
             if ("failed".equals(p[4]) && p.length == 6) {
                 String reason = p[5];
-                if (!reason.matches("structure_changed|slice_budget|source_unavailable_or_over_limit|invalid_source"))
+                if (!reason.matches("structure_changed|slice_budget|source_unavailable_or_over_limit|source_unavailable|source_limit|invalid_source"))
                     throw new IllegalArgumentException();
                 retire("failed", reason);
                 return;
@@ -120,7 +121,7 @@ final class ResearchPokemonExport {
                 capture.expected = count;
             }
             for (String encoded : rows) {
-                ResearchPokemonBag.Row row = new ResearchPokemonBag.Row(encoded);
+                LocalApiPokemonBag.Row row = new LocalApiPokemonBag.Row(encoded);
                 if (!capture.ids.add(row.instanceId)) throw new IllegalArgumentException();
                 capture.rows.add(row);
                 if (row.egg) capture.eggs++;
@@ -144,24 +145,57 @@ final class ResearchPokemonExport {
         }
     }
 
+    synchronized boolean active() { return lease != 0; }
+
+    synchronized Capture current() {
+        expire(clock.getAsLong());
+        return capture;
+    }
+
+    synchronized boolean fresh(Capture value) {
+        return value != null && value == current() && "completed".equals(value.state)
+            && clock.getAsLong() - value.finished <= 10_000;
+    }
+
+    synchronized Capture request(int pageSize) {
+        long now = clock.getAsLong();
+        expire(now);
+        if (lease == 0 || data.session() == null) return null;
+        if (capture != null && "capturing".equals(capture.state)) return capture;
+        capture = new Capture(data.session(), now + DEADLINE, pageSize, lease);
+        attempts++;
+        try {
+            demand.set(capture.revision, lease, capture.deadline);
+        } catch (LinkageError unavailable) {
+            capture.state = "failed";
+            capture.reason = "native_capture_unavailable";
+            capture.expires = now + RETENTION;
+        }
+        return capture;
+    }
+
+    synchronized String state(Capture value) {
+        if (value == current()) return value.state;
+        return "completed".equals(value.state) && value.lease == lease
+            && value.account.equals(data.session()) && clock.getAsLong() < value.expires
+            ? value.state : "invalidated";
+    }
+
+    synchronized void abandon(Capture value) {
+        if (value == capture && "capturing".equals(value.state)) retire("cancelled", "disconnected");
+    }
+
     synchronized LocalApiRoutes.Reply route(String path, boolean post) {
         long now = clock.getAsLong();
         expire(now);
         if (lease == 0) return error(401, "research_inactive");
         if (post && path.matches("start\\?page_size=([1-9]|10)")) {
             if (capture != null && "capturing".equals(capture.state)) return error(409, "capture_in_progress");
-            String account = data.session();
-            if (account == null) return error(409, "verified_account_unavailable");
             int size = Integer.parseInt(path.substring(path.indexOf('=') + 1));
-            capture = new Capture(account, now + DEADLINE, size);
-            attempts++;
-            try {
-                demand.set(capture.revision, lease, capture.deadline);
-            } catch (LinkageError unavailable) {
-                capture = null;
-                return error(503, "native_capture_unavailable");
-            }
-            return reply(202, status(), account);
+            Capture started = request(size);
+            if (started == null) return error(409, "verified_account_unavailable");
+            if ("native_capture_unavailable".equals(started.reason)) return error(503, started.reason);
+            return reply(202, status(), started.account);
         }
         if (!post && path.equals("diagnostics")) {
             return reply(200, "{\"attempts\":" + attempts + ",\"completed\":" + completed
@@ -216,7 +250,7 @@ final class ResearchPokemonExport {
             .append(end == capture.rows.size() ? "null" : "\"" + cursor(end) + "\"").append(",\"items\":[");
         for (int i = index; i < end; i++) {
             if (i != index) out.append(',');
-            out.append(ResearchObservations.pokemonRow(capture.rows.get(i)));
+            out.append('{').append(capture.rows.get(i).jsonFields()).append('}');
         }
         String body = out.append("]}").toString();
         return body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 8192

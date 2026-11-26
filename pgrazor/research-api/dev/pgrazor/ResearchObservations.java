@@ -15,7 +15,7 @@ final class ResearchObservations {
     };
     private final LocalApiData data;
     private final ResearchProgression progression;
-    private final ResearchPokemonBag pokemonBag;
+    private final LocalApiPokemonBag pokemonBag;
 
     private enum Field {
         name("string"), xp("integer"), pokemon_caught("integer"), pokemon_encountered("integer"),
@@ -32,8 +32,8 @@ final class ResearchObservations {
         Field(String type) { this.type = type; }
 
         String value(Object value) {
-            if (value instanceof ResearchPokemonBag.Row) {
-                ResearchPokemonBag.Row pokemon = (ResearchPokemonBag.Row) value;
+            if (value instanceof LocalApiPokemonBag.Row) {
+                LocalApiPokemonBag.Row pokemon = (LocalApiPokemonBag.Row) value;
                 switch (this) {
                     case instance_id: return "\"" + pokemon.instanceId + "\"";
                     case species_id: return String.valueOf(pokemon.species);
@@ -87,23 +87,13 @@ final class ResearchObservations {
         }
     }
 
-    static String pokemonRow(ResearchPokemonBag.Row row) {
-        StringBuilder out = new StringBuilder("{");
-        for (Field field : Field.values()) {
-            if (!supported(POKEMON, field)) continue;
-            if (out.length() > 1) out.append(',');
-            out.append('"').append(field).append("\":").append(field.value(row));
-        }
-        return out.append('}').toString();
-    }
-
     ResearchObservations(LocalApiData data) { this(data, new ResearchProgression(data)); }
 
     ResearchObservations(LocalApiData data, ResearchProgression progression) {
-        this(data, progression, new ResearchPokemonBag(data));
+        this(data, progression, new LocalApiPokemonBag(data));
     }
 
-    ResearchObservations(LocalApiData data, ResearchProgression progression, ResearchPokemonBag pokemonBag) {
+    ResearchObservations(LocalApiData data, ResearchProgression progression, LocalApiPokemonBag pokemonBag) {
         this.data = data;
         this.progression = progression;
         this.pokemonBag = pokemonBag;
@@ -179,7 +169,7 @@ final class ResearchObservations {
     }
 
     private static int maxSamples(String id) {
-        return POKEMON.equals(id) ? ResearchPokemonBag.MAX_SAMPLES : 1;
+        return POKEMON.equals(id) ? LocalApiPokemonBag.MAX_SAMPLES : 1;
     }
 
     private static int bounded(String text, int fallback, int min, int max) {
@@ -214,8 +204,8 @@ final class ResearchObservations {
             String prefix = "{\"contract\":\"" + id + "\",\"provenance\":\"registered_provider\",";
             if (snapshot == null) return prefix + "\"availability\":\"unavailable\",\"reason\":\"" + reason + "\"}";
             java.util.List<?> rows;
-            if (snapshot.data instanceof ResearchPokemonBag.Values) {
-                ResearchPokemonBag.Values pokemon = (ResearchPokemonBag.Values) snapshot.data;
+            if (snapshot.data instanceof LocalApiPokemonBag.Values) {
+                LocalApiPokemonBag.Values pokemon = (LocalApiPokemonBag.Values) snapshot.data;
                 int end = Math.min(limit, pokemon.rows.size());
                 rows = pokemon.rows.subList(Math.min(offset, end), end);
                 String scope = limit == 1 ? "backing_list_head" : "backing_list_prefix";

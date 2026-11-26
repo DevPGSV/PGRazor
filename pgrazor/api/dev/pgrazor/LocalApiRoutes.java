@@ -16,15 +16,21 @@ final class LocalApiRoutes {
     private final LocalApiData data;
 
     final LocalApiWebSocket.Feed events;
+    final LocalApiPokemon pokemon;
 
-    private LocalApiRoutes(LocalApiData data) {
+    private LocalApiRoutes(LocalApiData data, LocalApiPokemon pokemon) {
         this.data = data;
+        this.pokemon = pokemon;
         events = data == null ? null : data::eventState;
     }
 
-    static LocalApiRoutes preview() { return new LocalApiRoutes(null); }
+    static LocalApiRoutes preview() { return new LocalApiRoutes(null, null); }
 
-    static LocalApiRoutes production(LocalApiData data) { return new LocalApiRoutes(data); }
+    static LocalApiRoutes production(LocalApiData data) { return new LocalApiRoutes(data, null); }
+
+    static LocalApiRoutes production(LocalApiData data, LocalApiPokemon pokemon) {
+        return new LocalApiRoutes(data, pokemon);
+    }
 
     Reply get(String path) {
         if ((PREFIX + "status").equals(path)) return status();
@@ -60,8 +66,11 @@ final class LocalApiRoutes {
         if (data == null) {
             return new Reply(200, "{\"api_version\":\"1\",\"mode\":\"synthetic_preview\",\"status\":\"running\"}");
         }
+        LocalApiPokemon.Status collectionStatus = pokemon == null ? null : pokemon.status();
         synchronized (data) {
             String session = data.session();
+            boolean currentCollection = collectionStatus != null && java.util.Objects.equals(collectionStatus.account, session);
+            boolean pokemonReady = currentCollection && collectionStatus.observedAt != null;
             LocalApiData.Snapshot<LocalApiTrainer> snapshot = data.latest(data.trainer);
             StringBuilder json = new StringBuilder("{\"api_version\":\"1\",\"status\":\"running\",\"account_ready\":")
                 .append(session != null).append(",\"session_generation\":")
@@ -71,12 +80,17 @@ final class LocalApiRoutes {
                 String resource = RESOURCES[index];
                 boolean trainer = resource.equals("trainer");
                 boolean fresh = trainer && snapshot != null && data.fresh(snapshot);
+                boolean collection = pokemon != null && resource.equals("pokemon");
                 boolean eventStream = resource.equals("events");
-                json.append('"').append(resource).append("\":{\"supported\":").append(trainer || eventStream)
-                    .append(",\"ready\":").append(fresh || eventStream).append(",\"coverage\":\"")
-                    .append(trainer && snapshot != null ? coverage(snapshot) : "unknown")
+                json.append('"').append(resource).append("\":{\"supported\":").append(trainer || eventStream || collection)
+                    .append(",\"ready\":").append(fresh || eventStream || collection && pokemonReady).append(",\"coverage\":\"")
+                    .append(trainer && snapshot != null ? coverage(snapshot) : collection && pokemonReady ? "complete" : "unknown")
                     .append("\",\"observed_at\":")
-                    .append(trainer && snapshot != null ? "\"" + snapshot.observedUtc + "\"" : "null");
+                    .append(trainer && snapshot != null ? "\"" + snapshot.observedUtc + "\""
+                        : collection && pokemonReady ? "\"" + collectionStatus.observedAt + "\"" : "null");
+                if (collection) json.append(",\"provider_state\":\"")
+                    .append(currentCollection ? collectionStatus.state : session == null ? "account_unavailable" : "no_snapshot")
+                    .append('"');
                 if (trainer) json.append(",\"freshness\":").append(snapshot == null ? "null" : fresh ? "\"fresh\"" : "\"stale\"");
                 json.append('}');
             }
@@ -96,7 +110,7 @@ final class LocalApiRoutes {
         return value.coverage.name().toLowerCase(Locale.ROOT);
     }
 
-    static Reply sessionChanged() { return error(409, "SESSION_CHANGED", "Trainer observation is no longer current", true); }
+    static Reply sessionChanged() { return error(409, "SESSION_CHANGED", "Account observation is no longer current", true); }
 
     private static Reply error(int code, String type, String message, boolean retry) {
         return new Reply(code, "{\"api_version\":\"1\",\"error\":{\"code\":\"" + type
@@ -106,14 +120,24 @@ final class LocalApiRoutes {
     static final class Reply {
         final int code;
         final String body;
+        final byte[] bytes;
         final String session;
         final LocalApiData.Snapshot<?> snapshot;
 
         Reply(int code, String body) { this(code, body, null, null); }
 
         Reply(int code, String body, String session, LocalApiData.Snapshot<?> snapshot) {
+            this(code, body, null, session, snapshot);
+        }
+
+        Reply(int code, byte[] bytes, String session) {
+            this(code, null, bytes, session, null);
+        }
+
+        private Reply(int code, String body, byte[] bytes, String session, LocalApiData.Snapshot<?> snapshot) {
             this.code = code;
             this.body = body;
+            this.bytes = bytes;
             this.session = session;
             this.snapshot = snapshot;
         }

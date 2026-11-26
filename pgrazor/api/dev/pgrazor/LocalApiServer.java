@@ -126,6 +126,8 @@ final class LocalApiServer implements AutoCloseable {
         private final LocalApiExtension extension;
         private boolean handled;
 
+        private boolean pokemonPending;
+
         StatusHandler(byte[] authorization, LocalApiRoutes routes, BooleanSupplier valid,
                 ScheduledFuture<?> timeout, LocalApiWebSocket.Limits webSockets, LocalApiExtension extension) {
             this.authorization = authorization;
@@ -137,7 +139,10 @@ final class LocalApiServer implements AutoCloseable {
         }
 
         @Override protected void channelRead0(ChannelHandlerContext ctx, HttpRequest request) {
-            if (handled) return;
+            if (handled) {
+                if (pokemonPending) ctx.close();
+                return;
+            }
             handled = true;
             ctx.channel().config().setAutoRead(false);
 
@@ -189,8 +194,51 @@ final class LocalApiServer implements AutoCloseable {
                 if (status != null) send(ctx, null, status, "{\"error\":\"WEBSOCKET_UPGRADE_REJECTED\"}", access);
                 return;
             }
+            if (!optional && routes.pokemon != null && LocalApiPokemon.owns(uri)) {
+                pokemon(ctx, uri);
+                return;
+            }
             LocalApiRoutes.Reply reply = optional ? (post ? access.post(uri) : access.get(uri)) : routes.get(uri);
             send(ctx, reply, HttpResponseStatus.valueOf(reply.code), reply.body, access);
+        }
+
+        private void pokemon(ChannelHandlerContext ctx, String uri) {
+            LocalApiPokemon provider = routes.pokemon;
+            LocalApiPokemon.Start start = provider.start(uri);
+            if (start.error != null) {
+                send(ctx, start.error, HttpResponseStatus.valueOf(start.error.code), start.error.body, null);
+                return;
+            }
+            timeout.cancel(false);
+            pokemonPending = true;
+            ScheduledFuture<?> completion = ctx.executor().schedule(() -> { ctx.close(); },
+                LocalApiPokemon.HTTP_SECONDS, TimeUnit.SECONDS);
+            ctx.channel().closeFuture().addListener(ignored -> {
+                completion.cancel(false);
+                provider.release(start.request);
+            });
+            // Detect a peer disconnect during capture. A pipelined second request closes the connection.
+            ctx.channel().config().setAutoRead(true);
+            awaitPokemon(ctx, provider, start.request);
+        }
+
+        private void awaitPokemon(ChannelHandlerContext ctx, LocalApiPokemon provider, LocalApiPokemon.Request request) {
+            if (!ctx.channel().isActive()) return;
+            if (!valid.getAsBoolean()) { ctx.close(); return; }
+            String state = provider.state(request);
+            if ("capturing".equals(state)) {
+                ctx.executor().schedule(() -> awaitPokemon(ctx, provider, request), 100, TimeUnit.MILLISECONDS);
+                return;
+            }
+            if (!"completed".equals(state)) {
+                LocalApiRoutes.Reply error = provider.unavailable(request, state);
+                send(ctx, error, HttpResponseStatus.valueOf(error.code), error.body, null);
+                return;
+            }
+            provider.serialize(request, reply -> ctx.executor().execute(() -> {
+                if (ctx.channel().isActive())
+                    send(ctx, reply, HttpResponseStatus.valueOf(reply.code), reply.body, null);
+            }));
         }
 
         private void send(ChannelHandlerContext ctx, LocalApiRoutes.Reply reply, HttpResponseStatus status,
@@ -210,7 +258,8 @@ final class LocalApiServer implements AutoCloseable {
 
         private void writeReply(ChannelHandlerContext ctx, LocalApiRoutes.Reply reply,
                 HttpResponseStatus status, String body) {
-            FullHttpResponse response = response(status, body);
+            FullHttpResponse response = reply != null && reply.bytes != null
+                ? response(status, reply.bytes) : response(status, body);
             if (!routes.publish(reply, () -> ctx.write(response).addListener(ChannelFutureListener.CLOSE))) {
                 response.release();
                 LocalApiRoutes.Reply expired = LocalApiRoutes.sessionChanged();
@@ -220,7 +269,10 @@ final class LocalApiServer implements AutoCloseable {
         }
 
         private static FullHttpResponse response(HttpResponseStatus status, String body) {
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            return response(status, body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        private static FullHttpResponse response(HttpResponseStatus status, byte[] bytes) {
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status,
                 Unpooled.wrappedBuffer(bytes));
             response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=utf-8")

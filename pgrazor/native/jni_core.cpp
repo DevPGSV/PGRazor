@@ -10,6 +10,7 @@
 #include "runtime_transport_jni.h"
 #include "runtime_bootstrap.h"
 #include "runtime_host.h"
+#include "session_stats.h"
 
 #ifdef PGRAZOR_RESEARCH_DISCOVERY
 int pgrazor_register_research_discovery(JNIEnv *);
@@ -51,7 +52,13 @@ jlongArray JNICALL jni_runtime_health(JNIEnv *env,jclass){
     return result;
 }
 
+void JNICALL jni_collection_request(JNIEnv *, jclass, jlong request, jlong lease, jlong deadline) {
+    pgr_collection_request(false, request, lease, deadline);
+}
+
 const JNINativeMethod kMethods[] = {
+    {const_cast<char *>("collectionRequest"),const_cast<char *>("(JJJ)V"),
+     reinterpret_cast<void *>(&jni_collection_request)},
     {const_cast<char *>("apiVersion"), const_cast<char *>("()I"),
      reinterpret_cast<void *>(&jni_api_version)},
     {const_cast<char *>("policySelfcheck"), const_cast<char *>("()I"),

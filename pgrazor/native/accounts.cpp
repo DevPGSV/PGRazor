@@ -770,8 +770,13 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
 
   ActiveFrameGuard frame_guard;
   ScopedTickFlag tick_flag;
+#ifdef __ANDROID__
 #ifdef PGRAZOR_RESEARCH_DISCOVERY
-  pgr_research_export_cleanup();
+  const uint64_t research_lease = pgr_research_progression_lease(clock_boottime_ms());
+#else
+  constexpr uint64_t research_lease = 0;
+#endif
+  pgr_collection_cleanup(research_lease);
 #endif
 
   bool need_cleanup = false;
@@ -854,10 +859,10 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
   }
 
   ScopedGcRoot player_root;
-#ifdef PGRAZOR_RESEARCH_DISCOVERY
+#ifdef __ANDROID__
   ScopedGcRoot research_container;
-  const uint64_t research_lease = pgr_research_progression_lease(now_bt);
-  auto *research_context = research_lease ? &research_container : nullptr;
+  auto *research_context = (research_lease || pgr_collection_pending(now_bt, research_lease))
+      ? &research_container : nullptr;
 #else
   ScopedGcRoot *research_context = nullptr;
 #endif
@@ -1000,7 +1005,7 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
                         id_buf, id_len, name_buf, name_len);
     }
   }
-#ifdef PGRAZOR_RESEARCH_DISCOVERY
+#ifdef __ANDROID__
   static bool research_identity_changed = false;
   {
     // Never sample a replacement identity in a process which previously saw another account.
@@ -1017,24 +1022,24 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
   const bool trainer_requested = trainer_observed && pgr_local_api_trainer_requested();
   if (trainer_requested)
     pgr_local_api_trainer(player_root.target(), id_buf, id_len, name_buf, name_len, trainer_observed);
-#ifdef PGRAZOR_RESEARCH_DISCOVERY
   const uint64_t start = clock_boottime_ms();
-  const bool exporting = pgr_research_export_pending(start, research_lease);
-  if ((trainer_requested || exporting) && !research_identity_changed && research_lease &&
-      research_container.target() && pgr_research_progression_lease(start) == research_lease) {
+  const bool exporting = pgr_collection_pending(start, research_lease);
+  if ((exporting || (trainer_requested && research_lease)) && !research_identity_changed &&
+      research_container.target()) {
     void *contract = nullptr, *implementation = nullptr;
     ScopedGcRoot bag;
-    if (pgr_research_bag_classes(&contract, &implementation) &&
+    if (pgr_collection_bag_classes(&contract, &implementation) &&
         resolve_in_container(research_container, static_cast<Il2CppClass*>(contract),
                              static_cast<Il2CppClass*>(implementation), &bag)) {
       if (exporting)
-        pgr_research_export_slice(bag.target(), player_root.target(), id_buf, id_len, research_lease, start);
-      else
+        pgr_collection_slice(bag.target(), player_root.target(), id_buf, id_len, research_lease, start);
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+      else if (pgr_research_progression_lease(start) == research_lease)
         pgr_research_bag_observed(bag.target(), player_root.target(), id_buf, id_len,
                                   trainer_observed, research_lease, start);
+#endif
     }
   }
-#endif
 #else
   (void) trainer_observed;
 #endif

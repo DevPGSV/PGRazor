@@ -210,7 +210,7 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
  } catch (...) {}
 }
 
-#ifdef PGRAZOR_RESEARCH_DISCOVERY
+#ifdef __ANDROID__
 namespace {
 constexpr const char *kPair = "System.Collections.Generic.KeyValuePair<System.UInt64,Holoholo.Rpc.PokemonProto>";
 constexpr const char *kList = "System.Collections.Generic.LinkedList<System.Collections.Generic.KeyValuePair<System.UInt64,Holoholo.Rpc.PokemonProto>>";
@@ -218,7 +218,7 @@ constexpr const char *kNode = "System.Collections.Generic.LinkedListNode<System.
 constexpr const char *kMap = "Niantic.Holoholo.Collections.LinkedHashMap<System.UInt64,Holoholo.Rpc.PokemonProto>";
 constexpr const char *kPokemon = "Holoholo.Rpc.PokemonProto";
 
-void ensure_research_boot() {
+void ensure_capture_boot() {
  if (ready) return;
  const auto *api = static_cast<const PgrBootApi*>(pgrazor_runtime_bootstrap_api(1));
  boot.version=1;boot.size=sizeof(boot);
@@ -308,6 +308,7 @@ std::string capture_pokemon(void *pokemon,uint64_t key) {
      +"|"+std::to_string(creation>0 ? creation : -1)+"|"+nickname(pokemon)+(egg ? "|-1|-1|-1|-1|-1|-1" : capture_display(pokemon));
 }
 
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
 std::string capture_bag(void *bag,void *owner,uint64_t started) {
  require(clock_ms()-started<20,"capture deadline");
  require(field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==owner,"bag owner mismatch");
@@ -345,26 +346,28 @@ std::string capture_bag(void *bag,void *owner,uint64_t started) {
       && field<int32_t>(list.get(),"count","System.Int32")==n && clock_ms()-started<20,"bag changed");
  return std::to_string(n)+","+std::to_string(clock_ms()-started)+"|"+sample;
 }
+#endif
 }
 
-bool pgr_research_bag_classes(void **contract,void **implementation) noexcept {
+bool pgr_collection_bag_classes(void **contract,void **implementation) noexcept {
  try {
   std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
   if(!lock) return false;
-  ensure_research_boot();
+  ensure_capture_boot();
   *contract=cls("Niantic.Holoholo","IPokemonBag");
   *implementation=cls("Niantic.Holoholo.Internal","PokemonBagImpl");
   return *contract && *implementation;
  } catch (...) { return false; }
 }
 
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
 void pgr_research_bag_observed(void *bag,void *player,const uint16_t *id,uint16_t length,
                               uint64_t observed,uint64_t lease,uint64_t started) noexcept {
  try {
   if (!bag || !player || !id || !length || length>256 || lease!=pgr_research_progression_lease(clock_ms())) return;
   std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
   if(!lock) return;
-  ensure_research_boot();
+  ensure_capture_boot();
   Root owner(player), storage(bag);
   std::string sample=capture_bag(storage.get(),owner.get(),started);
   if (lease!=pgr_research_progression_lease(clock_ms())) return;
@@ -385,20 +388,40 @@ void pgr_research_bag_observed(void *bag,void *player,const uint16_t *id,uint16_
   transport->emit(19,nullptr,0,args,2);
  } catch (...) {}
 }
+#endif
+
 namespace {
 constexpr int kExportRows = 2048, kExportSliceRows = 32;
 constexpr uint64_t kSliceSoftMs = 4, kSliceHardMs = 12;
-std::atomic<uint64_t> export_request{0}, export_lease{0}, export_deadline{0};
+struct ExportDemand {
+ std::atomic<uint64_t> request{0}, lease{0}, deadline{0};
+ uint64_t finished=0; // owner thread only
+};
+ExportDemand demands[2];
+
 struct ExportCursor {
  uint64_t id=0, started=0;
+ int realm=0;
  Root bag, player, map, list, head, next;
  std::u16string owner;
  int count=0, version=0, position=0;
 };
 ExportCursor cursor;
-uint64_t finished_request=0;
+bool pending(int realm,uint64_t now,uint64_t research_lease) {
+ auto &d=demands[realm];
+ const auto request=d.request.load();
+ const auto lease=d.lease.load();
+ return request && request!=d.finished && lease && (!realm || lease==research_lease)
+      && now<d.deadline.load() && request==d.request.load();
+}
 
-bool emit_export(uint64_t request,uint64_t lease,const std::u16string &owner,
+int active_realm(uint64_t now,uint64_t research_lease) {
+ if (cursor.id && pending(cursor.realm,now,research_lease)) return cursor.realm;
+ if (pending(0,now,research_lease)) return 0;
+ return pending(1,now,research_lease) ? 1 : -1;
+}
+
+bool emit_export(int realm,uint64_t request,uint64_t lease,const std::u16string &owner,
                  const std::string &data) {
  const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
  if(!transport)return false;
@@ -406,13 +429,18 @@ bool emit_export(uint64_t request,uint64_t lease,const std::u16string &owner,
  constexpr char digits[]="0123456789abcdef";
  for(char16_t c:owner) for(int shift=12;shift>=0;shift-=4) packet+=digits[(c>>shift)&15];
  packet+="|"+data;
- const char event[]="research-pokemon-bag";
- const PgrRuntimeTransportString args[]={{event,sizeof(event)-1},{packet.data(),uint32_t(packet.size())}};
+ const char *event="local-api-pokemon";
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+ if (realm) event="research-pokemon-bag";
+#else
+ if (realm) return false;
+#endif
+ const PgrRuntimeTransportString args[]={{event,uint32_t(std::strlen(event))},{packet.data(),uint32_t(packet.size())}};
  return transport->emit(19,nullptr,0,args,2)==0;
 }
 
-void finish_export(uint64_t request) {
- finished_request=request;
+void finish_export(int realm,uint64_t request) {
+ demands[realm].finished=request;
  cursor=ExportCursor{};
 }
 
@@ -427,44 +455,44 @@ void verify_export_source(void *bag,void *player) {
 }
 }
 
-void pgr_research_export_request(uint64_t request,uint64_t lease,uint64_t deadline) noexcept {
- export_request.store(0);
- export_lease.store(lease);
- export_deadline.store(deadline);
- export_request.store(request);
+void pgr_collection_request(bool research,uint64_t request,uint64_t lease,uint64_t deadline) noexcept {
+ auto &d=demands[research ? 1 : 0];
+ d.request.store(0);
+ d.lease.store(lease);
+ d.deadline.store(deadline);
+ d.request.store(request);
 }
 
-bool pgr_research_export_pending(uint64_t now,uint64_t lease) noexcept {
- const auto request=export_request.load();
- return request && request!=finished_request && lease && lease==export_lease.load()
-     && now<export_deadline.load() && request==export_request.load();
+bool pgr_collection_pending(uint64_t now,uint64_t research_lease) noexcept {
+ return active_realm(now,research_lease)>=0;
 }
 
-void pgr_research_export_cleanup() noexcept {
- if (!cursor.id) return;
- const uint64_t now=clock_ms();
- if (cursor.id!=export_request.load()
-     || !pgr_research_export_pending(now,pgr_research_progression_lease(now))) finish_export(cursor.id);
+void pgr_collection_cleanup(uint64_t research_lease) noexcept {
+ if (cursor.id && (cursor.id!=demands[cursor.realm].request.load()
+     || !pending(cursor.realm,clock_ms(),research_lease))) finish_export(cursor.realm,cursor.id);
 }
 
-void pgr_research_export_slice(void *bag,void *player,const uint16_t *id,uint16_t length,
-                               uint64_t lease,uint64_t started) noexcept {
- const auto request=export_request.load();
- if (!bag || !player || !id || !length || length>256
-     || !pgr_research_export_pending(clock_ms(),lease) || request!=export_request.load()) return;
+void pgr_collection_slice(void *bag,void *player,const uint16_t *id,uint16_t length,
+                          uint64_t research_lease,uint64_t started) noexcept {
+ const int realm=active_realm(clock_ms(),research_lease);
+ if (realm<0 || !bag || !player || !id || !length || length>256) return;
+ auto &d=demands[realm];
+ const auto request=d.request.load(), lease=d.lease.load();
+ if (!pending(realm,clock_ms(),research_lease) || request!=d.request.load()) return;
  try {
   std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
   if(!lock)return;
-  ensure_research_boot();
+  ensure_capture_boot();
   const std::u16string owner(id,id+length);
-  if (cursor.id!=request) {
+  if (cursor.id!=request || cursor.realm!=realm) {
    cursor=ExportCursor{};
-   cursor.id=request; cursor.owner=owner; cursor.started=started;
+   cursor.id=request; cursor.realm=realm; cursor.owner=owner; cursor.started=started;
    cursor.bag=Root(bag); cursor.player=Root(player);
    cursor.map=Root(field<void*>(bag,"esed",kMap));assert_type(cursor.map.get(),kMap);
    cursor.list=Root(field<void*>(cursor.map.get(),"list",kList));assert_type(cursor.list.get(),kList);
    cursor.count=field<int32_t>(cursor.list.get(),"count","System.Int32");
-   require(cursor.count>0 && cursor.count<=kExportRows,"source_unavailable_or_over_limit");
+   require(cursor.count>0,"source_unavailable");
+   require(cursor.count<=kExportRows,"source_limit");
    cursor.version=field<int32_t>(cursor.list.get(),"version","System.Int32");
    cursor.head=Root(field<void*>(cursor.list.get(),"head",kNode));assert_type(cursor.head.get(),kNode);
    cursor.next=Root(cursor.head.get());
@@ -495,24 +523,26 @@ void pgr_research_export_slice(void *bag,void *player,const uint16_t *id,uint16_
   require(!done || cursor.next.get()==cursor.head.get(),"structure_changed");
   const uint64_t now=clock_ms(), slice=now-started;
   require(slice<kSliceHardMs,"slice_budget");
-  if (!pgr_research_export_pending(now,lease) || request!=export_request.load()
-       || lease!=pgr_research_progression_lease(now)) { finish_export(request); return; }
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  if (realm && lease!=pgr_research_progression_lease(now)) { finish_export(realm,request); return; }
+#endif
+  if (!pending(realm,now,research_lease) || request!=d.request.load()) { finish_export(realm,request); return; }
   if (rows.empty()) return;
-  const bool emitted=emit_export(request,lease,owner,std::string(done?"done":"slice")+"|"
+  const bool emitted=emit_export(realm,request,lease,owner,std::string(done?"done":"slice")+"|"
       +std::to_string(cursor.count)+"|"+std::to_string(offset)+"|"+std::to_string(cursor.started)+"|"
       +std::to_string(now)+"|"+std::to_string(slice)+"|"+rows);
-  if (done || !emitted) finish_export(request);
+  if (done || !emitted) finish_export(realm,request);
  } catch (const Failure &failure) {
   try {
-   if (request==export_request.load() && cursor.id==request) {
+   if (request==d.request.load() && cursor.id==request) {
     const std::string reason=failure.where;
-    emit_export(request,lease,cursor.owner,"failed|"+(reason=="structure_changed" || reason=="slice_budget"
-      || reason=="source_unavailable_or_over_limit" ? reason : "invalid_source"));
+    emit_export(realm,request,lease,cursor.owner,"failed|"+(reason=="structure_changed" || reason=="slice_budget"
+      || reason=="source_unavailable" || reason=="source_limit" ? reason : "invalid_source"));
    }
   } catch (...) {}
-  finish_export(request);
+  finish_export(realm,request);
  } catch (...) {
-  finish_export(request);
+  finish_export(realm,request);
  }
 }
 

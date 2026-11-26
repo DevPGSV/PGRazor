@@ -217,7 +217,7 @@ public final class ResearchApiTest {
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
         data.enable();
-        ResearchPokemonBag bag = new ResearchPokemonBag(data);
+        LocalApiPokemonBag bag = new LocalApiPokemonBag(data);
         ResearchObservations registry = new ResearchObservations(data, new ResearchProgression(data), bag);
         ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
         String query = "observe?contract=pokemon.bag.v1";
@@ -284,7 +284,7 @@ public final class ResearchApiTest {
         AtomicLong requested = new AtomicLong();
         LocalApiData data = new LocalApiData(clock::get, clock::get);
         data.enable();
-        ResearchPokemonExport export = new ResearchPokemonExport(data, clock::get, clock::get,
+        LocalApiPokemonCapture export = new LocalApiPokemonCapture(data, clock::get, clock::get,
             (revision, lease, deadline) -> requested.set(revision));
         export.leaseChanged(9);
         check(export.route("start?page_size=1", true).code == 409);

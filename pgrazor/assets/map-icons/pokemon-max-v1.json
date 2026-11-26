@@ -1,0 +1,13 @@
+{
+  "game_version": "0.437.0",
+  "version": "pgr-pokemon-en-v1",
+  "modes": {
+    "0": ["normal", false, false, false],
+    "1": ["dynamax", true, false, true],
+    "2": ["gigantamax", false, true, true]
+  },
+  "normal_eligibility_unknown": [888, 889, 890],
+  "special_mode": 4,
+  "special_species": 890,
+  "special_form": 2581
+}

@@ -7,6 +7,8 @@ package dev.pgrazor;
  * process-lifetime scheduler. Java transport/location readiness alone does not attest gameplay readiness.
  */
 public final class NativeCore {
+    static native void collectionRequest(long request, long lease, long deadline);
+
     private NativeCore() {}
 
     /** Returns the native C-API table version the loaded library implements (see pgrazor_native_api.h). */
