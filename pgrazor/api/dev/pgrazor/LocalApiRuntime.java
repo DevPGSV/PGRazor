@@ -111,4 +111,6 @@ final class LocalApiRuntime {
         LocalApiController current = controller;
         if (current != null) current.stop();
     }
+    static void inventoryObserved(String packet) { if (extension != null) extension.inventoryObserved(packet); }
+
 }

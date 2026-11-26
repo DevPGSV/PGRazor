@@ -10,12 +10,14 @@ final class ResearchObservations {
     private static final String TRAINER = "trainer.snapshot.v1";
     private static final String PROGRESSION = "trainer.progression.v1";
     private static final String POKEMON = "pokemon.bag.v1";
+    private static final String INVENTORY = "inventory.bag.v1";
     private static final String[] CANDIDATES = {
-        "inventory.bag.v1", "incubators.v1"
+        "incubators.v1"
     };
     private final LocalApiData data;
     private final ResearchProgression progression;
     private final LocalApiPokemonBag pokemonBag;
+    private final ResearchInventory inventory;
 
     private enum Field {
         name("string"), xp("integer"), pokemon_caught("integer"), pokemon_encountered("integer"),
@@ -26,12 +28,22 @@ final class ResearchObservations {
         nickname("string"), hp("integer"), max_hp("integer"), fast_move_id("integer"),
         charged_move_id("integer"), second_charged_move_id("integer"), lucky("boolean"),
         cp_multiplier("decimal"), creation_time_ms("integer"), shiny("boolean"), form_id("integer"),
-        costume_id("integer"), gender_id("integer"), alignment_id("integer"), bread_mode_raw("integer");
+        costume_id("integer"), gender_id("integer"), alignment_id("integer"), bread_mode_raw("integer"),
+        raw_total_items("integer"), raw_max_items("integer"), capture_elapsed_ms("integer");
 
         final String type;
         Field(String type) { this.type = type; }
 
         String value(Object value) {
+            if (value instanceof ResearchInventory.Values) {
+                ResearchInventory.Values counts = (ResearchInventory.Values) value;
+                switch (this) {
+                    case raw_total_items: return Integer.toString(counts.totalItems);
+                    case raw_max_items: return Integer.toString(counts.maxItems);
+                    case capture_elapsed_ms: return Integer.toString(counts.elapsed);
+                    default: throw new AssertionError();
+                }
+            }
             if (value instanceof LocalApiPokemonBag.Row) {
                 LocalApiPokemonBag.Row pokemon = (LocalApiPokemonBag.Row) value;
                 switch (this) {
@@ -94,12 +106,20 @@ final class ResearchObservations {
     }
 
     ResearchObservations(LocalApiData data, ResearchProgression progression, LocalApiPokemonBag pokemonBag) {
+        this(data, progression, pokemonBag, new ResearchInventory(data));
+    }
+
+    ResearchObservations(LocalApiData data, ResearchProgression progression, LocalApiPokemonBag pokemonBag,
+                         ResearchInventory inventory) {
         this.data = data;
         this.progression = progression;
         this.pokemonBag = pokemonBag;
+        this.inventory = inventory;
     }
 
     private static boolean supported(String id, Field field) {
+        boolean inventoryField = field.ordinal() >= Field.raw_total_items.ordinal();
+        if (INVENTORY.equals(id) || inventoryField) return INVENTORY.equals(id) && inventoryField;
         if (POKEMON.equals(id)) return field.ordinal() >= Field.instance_id.ordinal();
         if (field.ordinal() >= Field.instance_id.ordinal()) return false;
         boolean progressionField = field.ordinal() >= Field.level.ordinal();
@@ -119,6 +139,8 @@ final class ResearchObservations {
         describe(out, PROGRESSION, "account_owner_player_stats", progression.latest() != null);
         out.append(',');
         describe(out, POKEMON, "verified_bag_backing_list_prefix", pokemonBag.latest() != null);
+        out.append(',');
+        describe(out, INVENTORY, "verified_item_bag_raw_counters", inventory.latest() != null);
         for (String id : CANDIDATES) {
             out.append(",{\"id\":\"").append(id)
                 .append("\",\"ready\":false,\"reason\":\"approved_source_unavailable\",\"fields\":{}}");
@@ -150,8 +172,8 @@ final class ResearchObservations {
         int limit = bounded(count, 1, 1, maxSamples(id));
         int start = bounded(offset, 0, 0, limit);
         Set<Field> projection = new LinkedHashSet<>();
-        if (TRAINER.equals(id) || PROGRESSION.equals(id) || POKEMON.equals(id)) {
-            if (fields == null && POKEMON.equals(id)) {
+        if (TRAINER.equals(id) || PROGRESSION.equals(id) || POKEMON.equals(id) || INVENTORY.equals(id)) {
+            if (fields == null && (POKEMON.equals(id) || INVENTORY.equals(id))) {
                 for (Field field : Field.values()) if (supported(id, field)) projection.add(field);
             }
             if (fields == null && projection.isEmpty()) throw new IllegalArgumentException();
@@ -159,7 +181,7 @@ final class ResearchObservations {
                 Field field = Field.valueOf(name);
                 if (!supported(id, field) || !projection.add(field)) throw new IllegalArgumentException();
             }
-            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : POKEMON.equals(id) ? pokemonBag.latest() : fresh(), start, limit, "verified_snapshot_unavailable");
+            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : POKEMON.equals(id) ? pokemonBag.latest() : INVENTORY.equals(id) ? inventory.latest() : fresh(), start, limit, "verified_snapshot_unavailable");
         }
         for (String candidate : CANDIDATES) {
             if (candidate.equals(id) && fields == null)
@@ -203,6 +225,7 @@ final class ResearchObservations {
         String json() {
             String prefix = "{\"contract\":\"" + id + "\",\"provenance\":\"registered_provider\",";
             if (snapshot == null) return prefix + "\"availability\":\"unavailable\",\"reason\":\"" + reason + "\"}";
+            if (INVENTORY.equals(id)) prefix += "\"sample_scope\":\"raw_counters\",\"collection_complete\":null,";
             java.util.List<?> rows;
             if (snapshot.data instanceof LocalApiPokemonBag.Values) {
                 LocalApiPokemonBag.Values pokemon = (LocalApiPokemonBag.Values) snapshot.data;

@@ -20,6 +20,7 @@ final class ResearchApi implements LocalApiExtension {
     private final ResearchDiscovery discovery;
     private final ResearchObservations observations;
     private final ResearchProgression progression;
+    private final ResearchInventory inventory;
     private final LocalApiPokemonBag pokemonBag;
     private final LocalApiPokemonCapture pokemonExport;
 
@@ -41,18 +42,22 @@ final class ResearchApi implements LocalApiExtension {
         pokemonBag = new LocalApiPokemonBag(data);
         pokemonExport = new LocalApiPokemonCapture(data, SystemClock::elapsedRealtime, System::currentTimeMillis,
             ResearchDiscoveryNative::setExportRequest);
+        inventory = new ResearchInventory(data);
         session.observeLease((sequence, deadline) -> {
             pokemonBag.setLease(sequence);
             pokemonExport.leaseChanged(sequence);
+            inventory.leaseChanged(sequence);
             progression.setLease(sequence, deadline);
         });
-        observations = new ResearchObservations(data, progression, pokemonBag);
+        observations = new ResearchObservations(data, progression, pokemonBag, inventory);
     }
 
     @Override public void pokemonBagObserved(String packet) {
         if (packet != null && packet.startsWith("export|")) pokemonExport.accept(packet);
         else pokemonBag.accept(packet);
     }
+
+    @Override public void inventoryObserved(String packet) { inventory.accept(packet); }
 
     @Override public void progressionObserved(String packet) { progression.accept(packet); }
 

@@ -388,6 +388,70 @@ void pgr_research_bag_observed(void *bag,void *player,const uint16_t *id,uint16_
   transport->emit(19,nullptr,0,args,2);
  } catch (...) {}
 }
+bool pgr_inventory_summary_classes(void **contract,void **implementation) noexcept {
+ try {
+  std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
+  if (!lock) return false;
+  ensure_capture_boot();
+  *contract=cls("Niantic.Holoholo","IItemBag");
+  *implementation=cls("Niantic.Holoholo.Internal","ItemBagImpl");
+  return *contract && *implementation;
+ } catch (...) { return false; }
+}
+
+namespace {
+int32_t inventory_count(const Root &receiver,const char *name) {
+ void *getter=method(receiver.get(),name,0);
+ require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(getter,nullptr)&0x10)
+      && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(getter))=="System.Int32","count method");
+ Root boxed(invoke(getter,receiver.get()));
+ assert_type(boxed.get(),"System.Int32");
+ const void *value=fn<void*(*)(void*)>(boot.runtime.object_unbox)(boxed.get());
+ require(value,"count value");
+ int32_t count;
+ std::memcpy(&count,value,sizeof(count));
+ require(count>=0,"negative count");
+ return count;
+}
+}
+
+void pgr_inventory_summary_observed(void *bag,void *player,const uint16_t *id,uint16_t length,
+                                   uint64_t observed,uint64_t lease,uint64_t started) noexcept {
+ try {
+  if (!bag || !player || !id || !length || length>256 ||
+      lease!=pgr_research_progression_lease(clock_ms())) return;
+  std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
+  if (!lock) return;
+  ensure_capture_boot();
+  Root owner(player), itemBag(bag);
+  require(clock_ms()-started<8 &&
+      field<void*>(itemBag.get(),"esdo","Niantic.Holoholo.IPlayerService")==owner.get(),"bag owner");
+  const int32_t maxItems=inventory_count(owner,"get_MaxItems");
+  if (maxItems<=0 || clock_ms()-started>=8) return;
+  const int32_t totalItems=inventory_count(itemBag,"GetTotalItems");
+  if (field<void*>(itemBag.get(),"esdo","Niantic.Holoholo.IPlayerService")!=owner.get()) return;
+  const auto elapsed=clock_ms()-started;
+  if (elapsed>=8 || lease!=pgr_research_progression_lease(clock_ms())) return;
+  const auto *accounts=pgrazor_accounts_api(1);
+  const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
+  pgrazor_account_snapshot_v1_t identity{};
+  if (!accounts || !transport) return;
+  accounts->api_sample(&identity);
+  if (!identity.has_identity || identity.logging_out || identity.queue_overflow_latched ||
+      identity.last_identity_ms!=observed || identity.id_len!=length ||
+      std::memcmp(identity.id,id,length*sizeof(uint16_t))) return;
+  std::string packet=std::to_string(observed)+"|";
+  constexpr char digits[]="0123456789abcdef";
+  for (uint16_t i=0;i<length;++i)
+   for(int shift=12;shift>=0;shift-=4) packet+=digits[(id[i]>>shift)&15];
+  packet+="|"+std::to_string(lease)+"|"+std::to_string(totalItems)+"|"+
+      std::to_string(maxItems)+"|"+std::to_string(elapsed);
+  const char event[]="research-inventory-summary";
+  const PgrRuntimeTransportString args[]={{event,sizeof(event)-1},{packet.data(),uint32_t(packet.size())}};
+  transport->emit(19,nullptr,0,args,2);
+ } catch (...) {}
+}
+
 #endif
 
 namespace {

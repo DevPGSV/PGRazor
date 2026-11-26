@@ -14,4 +14,6 @@ final class LocalApiRuntime {
     static void progressionObserved(String packet) {}
     static void trainerObserved(String packet) {}
     static void invalidate() {}
+    static void inventoryObserved(String packet) {}
+
 }

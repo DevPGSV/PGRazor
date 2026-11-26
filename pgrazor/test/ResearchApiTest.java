@@ -16,6 +16,7 @@ public final class ResearchApiTest {
         observations();
         progression();
         pokemonBag();
+        inventorySummary();
         pokemonExport();
         discovery();
         AtomicLong clock = new AtomicLong(100);
@@ -334,6 +335,38 @@ public final class ResearchApiTest {
         id = jsonString(export.route("start?page_size=1", true).body, "id");
         data.seeIdentity("b", true);
         check(export.route("status?id=" + id, false).code == 404 && requested.get() == 0);
+    }
+
+    private static void inventorySummary() throws Exception {
+        AtomicLong clock = new AtomicLong(100);
+        LocalApiData data = new LocalApiData(clock::get, clock::get);
+        data.enable();
+        ResearchInventory inventory = new ResearchInventory(data);
+        ResearchObservations registry = new ResearchObservations(data, new ResearchProgression(data),
+            new LocalApiPokemonBag(data), inventory);
+        ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
+        String query = "observe?contract=inventory.bag.v1";
+        check(observationJob(jobs, registry, query).contains("verified_snapshot_unavailable"));
+        data.seeIdentity("a", true);
+        inventory.leaseChanged(9);
+        clock.incrementAndGet();
+        check(!inventory.accept("101|0061|8|0|350|1"));
+        check(!inventory.accept("101|0062|9|0|350|1"));
+        check(!inventory.accept("101|0061|9|-1|350|1"));
+        check(!inventory.accept("101|0061|9|0|0|1"));
+        check(!inventory.accept("101|0061|9|0|350|8"));
+        check(inventory.accept("101|0061|9|0|350|1"));
+        String value = observationJob(jobs, registry, query);
+        check(value.contains("\"coverage\":\"partial\"") && value.contains("\"collection_complete\":null")
+            && value.contains("\"raw_total_items\":0") && value.contains("\"raw_max_items\":350"));
+        check(observationJob(jobs, registry, query + "&offset=1").contains("\"items\":[]"));
+        check(jobs.route(query + "&fields=storage_usage", true, "lease", () -> true, registry).code == 400);
+        inventory.leaseChanged(10);
+        check(inventory.latest() == null);
+        clock.incrementAndGet();
+        check(inventory.accept("102|0061|10|5|350|0"));
+        data.seeIdentity("b", true);
+        check(inventory.latest() == null);
     }
 
     private static void progression() throws Exception {

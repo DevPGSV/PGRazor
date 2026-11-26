@@ -1040,6 +1040,19 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
 #endif
     }
   }
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  if (trainer_requested && !exporting && !research_identity_changed && research_lease && research_container.target()) {
+    const uint64_t inventory_start=clock_boottime_ms();
+    void *contract=nullptr, *implementation=nullptr;
+    ScopedGcRoot item_bag;
+    if (pgr_inventory_summary_classes(&contract,&implementation) &&
+        resolve_in_container(research_container,static_cast<Il2CppClass*>(contract),
+                             static_cast<Il2CppClass*>(implementation),&item_bag)) {
+      pgr_inventory_summary_observed(item_bag.target(),player_root.target(),id_buf,id_len,
+                                     trainer_observed,research_lease,inventory_start);
+    }
+  }
+#endif
 #else
   (void) trainer_observed;
 #endif

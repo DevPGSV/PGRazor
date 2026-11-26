@@ -1466,6 +1466,10 @@ public final class Control {
             LocalApiRuntime.pokemonBagObserved(detail);
             return;
         }
+        if ("research-inventory-summary".equals(kind)) {
+            LocalApiRuntime.inventoryObserved(detail);
+            return;
+        }
         if ("research-progression".equals(kind)) {
             LocalApiRuntime.progressionObserved(detail);
             return;

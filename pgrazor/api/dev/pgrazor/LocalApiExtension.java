@@ -33,4 +33,6 @@ interface LocalApiExtension {
         void refresh(List<String> bases);
         void hidden();
     }
+    default void inventoryObserved(String packet) {}
+
 }
