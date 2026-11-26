@@ -38,6 +38,9 @@ final class ResearchApiSession {
     private boolean loaded;
     private boolean storageFailed;
     private boolean listener;
+    interface LeaseObserver { void changed(long sequence, long deadline); }
+    private LeaseObserver observer = (sequence, deadline) -> {};
+    private long sequence;
     private Lease lease;
     private String lastVerifiedAccount;
 
@@ -80,7 +83,15 @@ final class ResearchApiSession {
         lastVerifiedAccount = id;
     }
 
-    synchronized void deactivate() { lease = null; }
+    synchronized void observeLease(LeaseObserver observer) { this.observer = observer; }
+
+    private void replaceLease(Lease next) {
+        if (lease == next) return;
+        lease = next;
+        observer.changed(next == null ? 0 : ++sequence, next == null ? 0 : next.deadline);
+    }
+
+    synchronized void deactivate() { replaceLease(null); }
 
     synchronized boolean storageFailed() { return storageFailed; }
 
@@ -101,7 +112,7 @@ final class ResearchApiSession {
                 && (saved.boot == PERMANENT_BOOT && saved.issued == 0 && saved.deadline == Long.MAX_VALUE
                     || (boot >= 0 || store == null) && saved.boot == boot && saved.issued >= 0
                         && saved.issued <= now && saved.deadline > now && saved.deadline - saved.issued <= 86_400_000L)) {
-            lease = new Lease(saved.token, saved.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString());
+            replaceLease(new Lease(saved.token, saved.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString()));
         } else issue(minutes);
     }
 
@@ -117,9 +128,9 @@ final class ResearchApiSession {
         Saved next = new Saved(Base64.getUrlEncoder().withoutPadding().encodeToString(bytes),
             minutes == 0 ? PERMANENT_BOOT : boot, minutes == 0 ? 0 : now,
             minutes == 0 ? Long.MAX_VALUE : now + minutes * 60_000L);
-        lease = null;
+        replaceLease(null);
         if (!persist(next)) return;
-        lease = new Lease(next.token, next.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString());
+        replaceLease(new Lease(next.token, next.deadline, accountEpoch.getAsLong(), java.util.UUID.randomUUID().toString()));
     }
 
     synchronized void rotate(Lease expected, int minutes) {
@@ -127,7 +138,7 @@ final class ResearchApiSession {
     }
 
     synchronized void revoke() {
-        lease = null;
+        replaceLease(null);
         persist(null);
     }
 
@@ -153,7 +164,7 @@ final class ResearchApiSession {
         if (lease != null && (clock.getAsLong() >= lease.deadline
                 || (saved != null && clock.getAsLong() < saved.issued)
                 || accountEpoch.getAsLong() != lease.account)) {
-            lease = null;
+            replaceLease(null);
         }
         return lease;
     }

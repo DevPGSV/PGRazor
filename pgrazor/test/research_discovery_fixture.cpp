@@ -91,6 +91,12 @@ const void *pgrazor_runtime_bootstrap_api(uint32_t) {
 }
 
 int main() {
+    assert(pgr_research_progression_lease(1) == 0);
+    setProgressionLease(nullptr, nullptr, 9, 100);
+    assert(pgr_research_progression_lease(99) == 9);
+    assert(pgr_research_progression_lease(100) == 0);
+    setProgressionLease(nullptr, nullptr, 0, 0);
+    assert(pgr_research_progression_lease(1) == 0);
     assert(reviewedBreadType("Holoholo.Proto.Shared.Bread", "BreadMoveSlotProto"));
     assert(reviewedBreadType("Holoholo.Proto.Shared.Bread", "BreadModeEnum.Types.Modifier"));
     assert(!reviewedBreadType("Holoholo.Proto.Shared.Bread", "Other"));

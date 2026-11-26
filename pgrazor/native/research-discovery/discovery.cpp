@@ -1,14 +1,25 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <string>
 #include <string_view>
 
 #include "runtime_bootstrap.h"
+#include "research-discovery/progression.h"
 
 namespace {
+std::atomic<uint64_t> progressionLease{0};
+std::atomic<uint64_t> progressionDeadline{0};
+
+void JNICALL setProgressionLease(JNIEnv *, jclass, jlong lease, jlong deadline) {
+    progressionLease.store(0);
+    progressionDeadline.store(deadline > 0 ? uint64_t(deadline) : 0);
+    progressionLease.store(lease > 0 ? uint64_t(lease) : 0);
+}
+
 using Clock = std::chrono::steady_clock;
 constexpr size_t kBudget = 7000;
 constexpr int kImageStride = 100000;
@@ -349,13 +360,19 @@ jstring JNICALL query(JNIEnv *env, jclass, jstring operation, jstring assembly, 
 }
 }
 
+uint64_t pgr_research_progression_lease(uint64_t now_ms) noexcept {
+    const uint64_t lease = progressionLease.load();
+    return lease && now_ms < progressionDeadline.load() && lease == progressionLease.load() ? lease : 0;
+}
+
 int pgrazor_register_research_discovery(JNIEnv *env) {
     const auto owner = env->FindClass("dev/pgrazor/ResearchDiscoveryNative");
     if (!owner) return -1;
-    const JNINativeMethod method = {const_cast<char *>("query"),
+    const JNINativeMethod methods[] = {{const_cast<char *>("query"),
         const_cast<char *>("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;"),
-        reinterpret_cast<void *>(&query)};
-    const int result = env->RegisterNatives(owner, &method, 1);
+        reinterpret_cast<void *>(&query)}, {const_cast<char *>("setProgressionLease"),
+        const_cast<char *>("(JJ)V"), reinterpret_cast<void *>(&setProgressionLease)}};
+    const int result = env->RegisterNatives(owner, methods, 2);
     env->DeleteLocalRef(owner);
     return result;
 }

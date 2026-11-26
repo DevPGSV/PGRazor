@@ -3,6 +3,9 @@
 #include "shared_metadata.h"
 #include "runtime_bootstrap.h"
 #include "runtime_transport.h"
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+#include "research-discovery/progression.h"
+#endif
 #include <dlfcn.h>
 #include <time.h>
 #include <unistd.h>
@@ -142,6 +145,10 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
   std::unique_lock<std::mutex> guard_lock(stats_mutex,std::try_to_lock);
   if(!guard_lock)return;
   char counters[256]{};
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  const uint64_t research = pgr_research_progression_lease(clock_ms());
+  char progression[128]{};
+#endif
   try {
    if(!ready){
     auto api=static_cast<const PgrBootApi*>(pgrazor_runtime_bootstrap_api(1));
@@ -151,6 +158,19 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
    Root stats(call(current,"get_PlayerStats"));
    if(stats&&class_name(stats.get())=="PlayerStatsProto"){
     const auto v=read_stats(stats.get());
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+    if(research && v.xp>0) {
+     try {
+      const auto level=field<int32_t>(stats.get(),"Level","System.Int32");
+      const auto previous=field<int64_t>(stats.get(),"PrevLevelExp","System.Int64");
+      const auto next=field<int64_t>(stats.get(),"NextLevelExp","System.Int64");
+      if(level>0) std::snprintf(progression,sizeof(progression),"|%llu|%d|%lld|%lld|%lld",
+          static_cast<unsigned long long>(research),level,v.xp,
+          static_cast<long long>(previous>=0 && previous<=v.xp ? previous : -1),
+          static_cast<long long>(next>0 && next>previous ? next : -1));
+     } catch (...) { /* The trainer snapshot remains independent. */ }
+    }
+#endif
     if(v.xp>0&&v.caught>=0&&v.seen>=0&&v.stops>=0&&v.hatched>=0&&std::isfinite(v.km)&&v.km>=0){
      // Integer millikilometers avoid locale-dependent decimal formatting.
      if(v.km<1e9f)std::snprintf(counters,sizeof(counters),"|%lld|%d|%d|%d|%lld|%d",
@@ -175,5 +195,14 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
   const char kind[]="local-api-trainer";
   PgrRuntimeTransportString args[]={{kind,sizeof(kind)-1},{packet.data(),uint32_t(packet.size())}};
   transport->emit(19,nullptr,0,args,2);
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  if(progression[0] && research == pgr_research_progression_lease(clock_ms())) {
+   std::string payload=std::to_string(observed_ms)+"|";
+   append_hex(payload,id,id_len);payload+=progression;
+   const char kind[]="research-progression";
+   PgrRuntimeTransportString research_args[]={{kind,sizeof(kind)-1},{payload.data(),uint32_t(payload.size())}};
+   transport->emit(19,nullptr,0,research_args,2);
+  }
+#endif
  } catch (...) {}
 }

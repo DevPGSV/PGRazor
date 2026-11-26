@@ -14,6 +14,7 @@ public final class ResearchApiTest {
     public static void main(String[] args) throws Exception {
         persistence();
         observations();
+        progression();
         discovery();
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
@@ -208,6 +209,39 @@ public final class ResearchApiTest {
         } finally {
             release.countDown();
         }
+    }
+
+    private static void progression() throws Exception {
+        AtomicLong clock = new AtomicLong(100);
+        LocalApiData data = new LocalApiData(clock::get, clock::get);
+        data.enable();
+        ResearchProgression progression = new ResearchProgression(data);
+        ResearchObservations registry = new ResearchObservations(data, progression);
+        ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
+        String query = "observe?contract=trainer.progression.v1&fields=level.xp.previous_level_xp_requirement.next_level_xp_requirement";
+        check(observationJob(jobs, registry, query).contains("verified_snapshot_unavailable"));
+        data.seeIdentity("a", true);
+        progression.setLease(9, Long.MAX_VALUE);
+        clock.incrementAndGet();
+        check(!progression.accept("101|0061|8|40|800|400|900"));
+        check(!progression.accept("101|0062|9|40|800|400|900"));
+        check(!progression.accept("101|0061|9|0|800|400|900"));
+        check(!progression.accept("101|0061|9|40|800|900|1000"));
+        check(progression.accept("101|0061|9|40|800|400|-1"));
+        check(!progression.accept("101|0061|9|41|801|400|900"));
+        String result = observationJob(jobs, registry, query);
+        check(result.contains("\"level\":40") && result.contains("\"xp\":800")
+              && result.contains("\"next_level_xp_requirement\":null"));
+        check(observationJob(jobs, registry, query + "&offset=1").contains("\"items\":[]"));
+        check(jobs.route(query + ".name", true, "lease", () -> true, registry).code == 400);
+        progression.setLease(10, Long.MAX_VALUE);
+        check(progression.latest() == null);
+        check(!progression.accept("101|0061|9|40|800|400|-1"));
+        clock.incrementAndGet();
+        check(progression.accept("102|0061|10|40|800|400|900"));
+        data.seeIdentity("b", true);
+        check(progression.latest() == null);
+        check(!progression.accept("102|0061|10|40|800|400|900"));
     }
 
     private static void observations() throws Exception {

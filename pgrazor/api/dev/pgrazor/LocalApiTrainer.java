@@ -47,7 +47,7 @@ final class LocalApiTrainer {
         return value;
     }
 
-    private static String utf16(String hex, int max) {
+    static String utf16(String hex, int max) {
         if (hex.isEmpty() || hex.length() % 4 != 0 || hex.length() > max * 4
                 || !hex.matches("[0-9a-f]+")) throw new IllegalArgumentException();
         StringBuilder out = new StringBuilder(hex.length() / 4);

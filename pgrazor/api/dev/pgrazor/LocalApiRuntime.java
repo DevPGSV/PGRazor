@@ -40,6 +40,10 @@ final class LocalApiRuntime {
         if (current != null && current.enabled()) current.loseIdentity();
     }
 
+    static void progressionObserved(String packet) {
+        if (extension != null) extension.progressionObserved(packet);
+    }
+
     static void trainerObserved(String packet) {
         LocalApiData current = data;
         if (current != null) LocalApiTrainer.accept(current, packet);

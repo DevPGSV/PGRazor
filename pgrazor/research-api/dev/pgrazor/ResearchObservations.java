@@ -8,19 +8,33 @@ import java.util.Set;
 /** Registry for reviewed observations. Capture uses existing immutable Java snapshots only. */
 final class ResearchObservations {
     private static final String TRAINER = "trainer.snapshot.v1";
+    private static final String PROGRESSION = "trainer.progression.v1";
     private static final String[] CANDIDATES = {
-        "pokemon.bag.v1", "inventory.bag.v1", "trainer.progression.v1", "incubators.v1"
+        "pokemon.bag.v1", "inventory.bag.v1", "incubators.v1"
     };
     private final LocalApiData data;
+    private final ResearchProgression progression;
 
     private enum Field {
         name("string"), xp("integer"), pokemon_caught("integer"), pokemon_encountered("integer"),
-        pokestops_visited("integer"), distance_walked_km("decimal"), eggs_hatched("integer");
+        pokestops_visited("integer"), distance_walked_km("decimal"), eggs_hatched("integer"),
+        level("integer"), previous_level_xp_requirement("integer"), next_level_xp_requirement("integer");
 
         final String type;
         Field(String type) { this.type = type; }
 
-        String value(LocalApiTrainer trainer) {
+        String value(Object value) {
+            if (value instanceof ResearchProgression.Values) {
+                ResearchProgression.Values stats = (ResearchProgression.Values) value;
+                switch (this) {
+                    case xp: return String.valueOf(stats.xp);
+                    case level: return String.valueOf(stats.level);
+                    case previous_level_xp_requirement: return String.valueOf(stats.previous);
+                    case next_level_xp_requirement: return String.valueOf(stats.next);
+                    default: throw new AssertionError();
+                }
+            }
+            LocalApiTrainer trainer = (LocalApiTrainer) value;
             switch (this) {
                 case name: return "\"" + trainer.name.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
                 case xp: return String.valueOf(trainer.xp);
@@ -35,7 +49,17 @@ final class ResearchObservations {
         }
     }
 
-    ResearchObservations(LocalApiData data) { this.data = data; }
+    ResearchObservations(LocalApiData data) { this(data, new ResearchProgression(data)); }
+
+    ResearchObservations(LocalApiData data, ResearchProgression progression) {
+        this.data = data;
+        this.progression = progression;
+    }
+
+    private static boolean supported(String id, Field field) {
+        boolean progressionField = field.ordinal() >= Field.level.ordinal();
+        return PROGRESSION.equals(id) ? progressionField || field == Field.xp : !progressionField;
+    }
 
     private LocalApiData.Snapshot<LocalApiTrainer> fresh() {
         if (data == null) return null;
@@ -44,21 +68,30 @@ final class ResearchObservations {
     }
 
     LocalApiRoutes.Reply status() {
-        boolean ready = fresh() != null;
-        StringBuilder out = new StringBuilder("{\"contracts\":[{\"id\":\"" + TRAINER
-            + "\",\"source\":\"validated_trainer_snapshot\",\"account_required\":true,\"max_samples\":1,"
-            + "\"max_result_bytes\":8192,\"job_deadline_ms\":2500,\"coverage\":\"partial\",\"ready\":" + ready
-            + ",\"reason\":" + (!ready ? "\"verified_snapshot_unavailable\"" : "null") + ",\"fields\":{");
-        for (Field field : Field.values()) {
-            if (field.ordinal() != 0) out.append(',');
-            out.append('"').append(field).append("\":\"").append(field.type).append('"');
-        }
-        out.append("}}");
+        StringBuilder out = new StringBuilder("{\"contracts\":[");
+        describe(out, TRAINER, "validated_trainer_snapshot", fresh() != null);
+        out.append(',');
+        describe(out, PROGRESSION, "account_owner_player_stats", progression.latest() != null);
         for (String id : CANDIDATES) {
             out.append(",{\"id\":\"").append(id)
                 .append("\",\"ready\":false,\"reason\":\"approved_source_unavailable\",\"fields\":{}}");
         }
         return new LocalApiRoutes.Reply(200, out.append("]}").toString());
+    }
+
+    private static void describe(StringBuilder out, String id, String source, boolean ready) {
+        out.append("{\"id\":\"").append(id).append("\",\"source\":\"").append(source)
+            .append("\",\"account_required\":true,\"max_samples\":1,\"max_result_bytes\":8192,")
+            .append("\"job_deadline_ms\":2500,\"coverage\":\"partial\",\"ready\":").append(ready)
+            .append(",\"reason\":").append(ready ? "null" : "\"verified_snapshot_unavailable\"").append(",\"fields\":{");
+        boolean comma = false;
+        for (Field field : Field.values()) {
+            if (!supported(id, field)) continue;
+            if (comma) out.append(',');
+            out.append('"').append(field).append("\":\"").append(field.type).append('"');
+            comma = true;
+        }
+        out.append("}}");
     }
 
     Capture prepare(Map<String, String> args) {
@@ -69,12 +102,13 @@ final class ResearchObservations {
         if (!args.isEmpty() || id == null || count != null && !"1".equals(count)
                 || offset != null && !"0".equals(offset) && !"1".equals(offset)) throw new IllegalArgumentException();
         Set<Field> projection = new LinkedHashSet<>();
-        if (TRAINER.equals(id)) {
+        if (TRAINER.equals(id) || PROGRESSION.equals(id)) {
             if (fields == null) throw new IllegalArgumentException();
             for (String name : fields.split("\\.", -1)) {
-                if (!projection.add(Field.valueOf(name))) throw new IllegalArgumentException();
+                Field field = Field.valueOf(name);
+                if (!supported(id, field) || !projection.add(field)) throw new IllegalArgumentException();
             }
-            return new Capture(id, projection, fresh(), "1".equals(offset), "verified_snapshot_unavailable");
+            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : fresh(), "1".equals(offset), "verified_snapshot_unavailable");
         }
         for (String candidate : CANDIDATES) {
             if (candidate.equals(id) && fields == null)
@@ -84,12 +118,12 @@ final class ResearchObservations {
     }
 
     final class Capture {
-        final LocalApiData.Snapshot<LocalApiTrainer> snapshot;
+        final LocalApiData.Snapshot<?> snapshot;
         private final String id, reason;
         private final Set<Field> projection;
         private final boolean end;
 
-        Capture(String id, Set<Field> projection, LocalApiData.Snapshot<LocalApiTrainer> snapshot,
+        Capture(String id, Set<Field> projection, LocalApiData.Snapshot<?> snapshot,
                 boolean end, String reason) {
             this.id = id;
             this.projection = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(projection));

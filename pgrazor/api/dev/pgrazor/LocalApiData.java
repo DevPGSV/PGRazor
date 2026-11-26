@@ -39,7 +39,7 @@ final class LocalApiData {
     private final List<Slot<?>> slots = new ArrayList<>();
     final Slot<LocalApiTrainer> trainer = slot();
 
-    private <T> Slot<T> slot() {
+    synchronized <T> Slot<T> slot() {
         Slot<T> slot = new Slot<>();
         slots.add(slot);
         return slot;

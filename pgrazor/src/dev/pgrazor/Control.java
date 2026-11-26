@@ -1458,6 +1458,10 @@ public final class Control {
     private static final MapCatchStatus mapCatchStatus = new MapCatchStatus();
     public static String mapCatchLabel(){return autoThrow && autoThrowOnMap && hostLive() ? mapCatchStatus.label(android.os.SystemClock.elapsedRealtime()) : "";}
     public static void event(String kind, String detail) {
+        if ("research-progression".equals(kind)) {
+            LocalApiRuntime.progressionObserved(detail);
+            return;
+        }
         if ("local-api-trainer".equals(kind)) {
             LocalApiRuntime.trainerObserved(detail);
             return;
