@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 
 from research_sdk import Client, ResearchError
+from research_sdk.pokemon_normalization import normalize_export
 from research_sdk.pokemon_export import complete_snapshot, partial_sample, save_export
 
 
@@ -24,7 +25,12 @@ def main() -> int:
     parser.add_argument("--name", required=True)
     parser.add_argument("--format", choices=("json", "csv"), required=True)
     parser.add_argument("--iv-percent", action="store_true")
+    parser.add_argument("--normalize", action="store_true", help="add versioned English and Max fields")
+    parser.add_argument("--game-version", help="game version required for normalization")
+    parser.add_argument("--move-catalog", type=Path, help="directory of pinned offline move JSON files")
     args = parser.parse_args()
+    if args.normalize != bool(args.game_version) or args.move_catalog and not args.normalize:
+        parser.error("--normalize requires --game-version; --move-catalog is optional with normalization")
     if args.partial and args.selection != "all":
         parser.error("--selection requires --complete")
     try:
@@ -39,8 +45,13 @@ def main() -> int:
         client = Client(args.base, token)
         result = (complete_snapshot(client, page_size=args.limit, selection=args.selection, iv_percent=args.iv_percent)
                   if args.complete else partial_sample(client, limit=args.limit, iv_percent=args.iv_percent))
+        if args.normalize:
+            result = normalize_export(result, game_version=args.game_version, move_catalog=args.move_catalog)
         path = save_export(result, args.directory, args.name, args.format)
-        print(json.dumps({"file": str(path), "coverage": result["coverage"], "rows": result["exported_rows"]}))
+        summary = {"file": str(path), "coverage": result["coverage"], "rows": result["exported_rows"]}
+        if args.normalize:
+            summary["max_category_counts"] = result["max_category_counts"]
+        print(json.dumps(summary))
         return 0
     except ResearchError as error:
         print(json.dumps({"error": str(error), "http_status": error.status}))

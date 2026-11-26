@@ -197,6 +197,13 @@ def save_export(result: dict, directory: Path, name: str, format: str) -> Path:
                 else:
                     metadata = {"export_coverage": coverage, "observed_at": result["observed_at"]}
                     fields = list(result["items"][0])
+                if "normalization" in result:
+                    normalization = result["normalization"]
+                    metadata.update({"normalization_version": normalization["version"],
+                                     "normalization_game_version": normalization["game_version"],
+                                     "normalization_locale": normalization["locale"],
+                                     "species_catalog_sha256": normalization["species_sha256"],
+                                     "move_catalog_sha256": json.dumps(normalization["move_catalog_sha256"], sort_keys=True)})
                 writer = csv.DictWriter(stream, fieldnames=[*metadata, *fields])
                 writer.writeheader()
                 for row in result["items"]:
