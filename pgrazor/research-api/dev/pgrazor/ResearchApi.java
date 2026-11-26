@@ -20,6 +20,7 @@ final class ResearchApi implements LocalApiExtension {
     private final ResearchDiscovery discovery;
     private final ResearchObservations observations;
     private final ResearchProgression progression;
+    private final ResearchPokemonBag pokemonBag;
 
     ResearchApi(Application app, LocalApiData data) {
         this(new ResearchApiSession(SystemClock::elapsedRealtime, data::eventEpoch,
@@ -36,9 +37,15 @@ final class ResearchApi implements LocalApiExtension {
         this.session = session;
         metadata = new ResearchMetadata(data);
         progression = new ResearchProgression(data);
-        session.observeLease(progression::setLease);
-        observations = new ResearchObservations(data, progression);
+        pokemonBag = new ResearchPokemonBag(data);
+        session.observeLease((sequence, deadline) -> {
+            pokemonBag.setLease(sequence);
+            progression.setLease(sequence, deadline);
+        });
+        observations = new ResearchObservations(data, progression, pokemonBag);
     }
+
+    @Override public void pokemonBagObserved(String packet) { pokemonBag.accept(packet); }
 
     @Override public void progressionObserved(String packet) { progression.accept(packet); }
 

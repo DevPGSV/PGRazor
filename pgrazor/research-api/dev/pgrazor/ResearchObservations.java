@@ -9,21 +9,39 @@ import java.util.Set;
 final class ResearchObservations {
     private static final String TRAINER = "trainer.snapshot.v1";
     private static final String PROGRESSION = "trainer.progression.v1";
+    private static final String POKEMON = "pokemon.bag.v1";
     private static final String[] CANDIDATES = {
-        "pokemon.bag.v1", "inventory.bag.v1", "incubators.v1"
+        "inventory.bag.v1", "incubators.v1"
     };
     private final LocalApiData data;
     private final ResearchProgression progression;
+    private final ResearchPokemonBag pokemonBag;
 
     private enum Field {
         name("string"), xp("integer"), pokemon_caught("integer"), pokemon_encountered("integer"),
         pokestops_visited("integer"), distance_walked_km("decimal"), eggs_hatched("integer"),
-        level("integer"), previous_level_xp_requirement("integer"), next_level_xp_requirement("integer");
+        level("integer"), previous_level_xp_requirement("integer"), next_level_xp_requirement("integer"),
+        instance_id("string"), species_id("integer"), cp("integer"), attack_iv("integer"),
+        defense_iv("integer"), stamina_iv("integer"), favorite("boolean"), is_egg("boolean");
 
         final String type;
         Field(String type) { this.type = type; }
 
         String value(Object value) {
+            if (value instanceof ResearchPokemonBag.Values) {
+                ResearchPokemonBag.Values pokemon = (ResearchPokemonBag.Values) value;
+                switch (this) {
+                    case instance_id: return "\"" + pokemon.instanceId + "\"";
+                    case species_id: return String.valueOf(pokemon.species);
+                    case cp: return String.valueOf(pokemon.cp);
+                    case attack_iv: return String.valueOf(pokemon.attack);
+                    case defense_iv: return String.valueOf(pokemon.defense);
+                    case stamina_iv: return String.valueOf(pokemon.stamina);
+                    case favorite: return String.valueOf(pokemon.favorite);
+                    case is_egg: return Boolean.toString(pokemon.egg);
+                    default: throw new AssertionError();
+                }
+            }
             if (value instanceof ResearchProgression.Values) {
                 ResearchProgression.Values stats = (ResearchProgression.Values) value;
                 switch (this) {
@@ -52,11 +70,18 @@ final class ResearchObservations {
     ResearchObservations(LocalApiData data) { this(data, new ResearchProgression(data)); }
 
     ResearchObservations(LocalApiData data, ResearchProgression progression) {
+        this(data, progression, new ResearchPokemonBag(data));
+    }
+
+    ResearchObservations(LocalApiData data, ResearchProgression progression, ResearchPokemonBag pokemonBag) {
         this.data = data;
         this.progression = progression;
+        this.pokemonBag = pokemonBag;
     }
 
     private static boolean supported(String id, Field field) {
+        if (POKEMON.equals(id)) return field.ordinal() >= Field.instance_id.ordinal();
+        if (field.ordinal() >= Field.instance_id.ordinal()) return false;
         boolean progressionField = field.ordinal() >= Field.level.ordinal();
         return PROGRESSION.equals(id) ? progressionField || field == Field.xp : !progressionField;
     }
@@ -72,6 +97,8 @@ final class ResearchObservations {
         describe(out, TRAINER, "validated_trainer_snapshot", fresh() != null);
         out.append(',');
         describe(out, PROGRESSION, "account_owner_player_stats", progression.latest() != null);
+        out.append(',');
+        describe(out, POKEMON, "verified_bag_backing_list_head", pokemonBag.latest() != null);
         for (String id : CANDIDATES) {
             out.append(",{\"id\":\"").append(id)
                 .append("\",\"ready\":false,\"reason\":\"approved_source_unavailable\",\"fields\":{}}");
@@ -102,13 +129,14 @@ final class ResearchObservations {
         if (!args.isEmpty() || id == null || count != null && !"1".equals(count)
                 || offset != null && !"0".equals(offset) && !"1".equals(offset)) throw new IllegalArgumentException();
         Set<Field> projection = new LinkedHashSet<>();
-        if (TRAINER.equals(id) || PROGRESSION.equals(id)) {
+        if (TRAINER.equals(id) || PROGRESSION.equals(id) || POKEMON.equals(id)) {
+            if (fields == null && POKEMON.equals(id)) fields = "instance_id.species_id.cp.attack_iv.defense_iv.stamina_iv.favorite.is_egg";
             if (fields == null) throw new IllegalArgumentException();
             for (String name : fields.split("\\.", -1)) {
                 Field field = Field.valueOf(name);
                 if (!supported(id, field) || !projection.add(field)) throw new IllegalArgumentException();
             }
-            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : fresh(), "1".equals(offset), "verified_snapshot_unavailable");
+            return new Capture(id, projection, PROGRESSION.equals(id) ? progression.latest() : POKEMON.equals(id) ? pokemonBag.latest() : fresh(), "1".equals(offset), "verified_snapshot_unavailable");
         }
         for (String candidate : CANDIDATES) {
             if (candidate.equals(id) && fields == null)
@@ -139,6 +167,12 @@ final class ResearchObservations {
         String json() {
             String prefix = "{\"contract\":\"" + id + "\",\"provenance\":\"registered_provider\",";
             if (snapshot == null) return prefix + "\"availability\":\"unavailable\",\"reason\":\"" + reason + "\"}";
+            if (snapshot.data instanceof ResearchPokemonBag.Values) {
+                ResearchPokemonBag.Values pokemon = (ResearchPokemonBag.Values) snapshot.data;
+                prefix += "\"sample_scope\":\"backing_list_head\",\"collection_complete\":null,"
+                    + "\"counts\":{\"total_collection_entries\":" + pokemon.entries
+                    + ",\"owned_pokemon\":null,\"eggs\":null,\"incubated_eggs\":null,\"storage_capacity\":null},";
+            }
             if (end) return prefix + "\"availability\":\"observed\",\"coverage\":\"partial\",\"freshness\":\"fresh\","
                 + "\"next_offset\":null,\"items\":[]}";
             StringBuilder fields = new StringBuilder();

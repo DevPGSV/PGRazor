@@ -1,5 +1,8 @@
 #include "accounts.h"
 #include "session_stats.h"
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+#include "research-discovery/progression.h"
+#endif
 #include "hook_engine.h"
 #include "runtime_transport.h"
 #include <cstdio>
@@ -371,9 +374,32 @@ bool can_mutate_now(uint64_t expected_epoch) noexcept {
   return true;
 }
 
+bool resolve_in_container(const ScopedGcRoot& container, Il2CppClass* contract_class,
+                          Il2CppClass* expected_impl_class, ScopedGcRoot* out_service_root) noexcept {
+  if (!contract_class || !expected_impl_class || !out_service_root) return false;
+  const Il2CppType* contract_type = g_state.cfg.class_get_type(contract_class);
+  if (!contract_type) return false;
+  Il2CppObject* contract_type_obj = g_state.cfg.type_get_object(contract_type);
+  if (!contract_type_obj) return false;
+  ScopedGcRoot contract_type_root(contract_type_obj);
+  if (!contract_type_root.handle) return false;
+
+  Il2CppObject* container_target = container.target();
+  Il2CppObject* contract_target = contract_type_root.target();
+  if (!container_target || !contract_target) return false;
+  void* resolve_args[1] = {contract_target};
+  Il2CppObject* service = nullptr;
+  if (!invoke_checked(g_state.cfg.container_resolve_method, container_target, resolve_args, &service) ||
+      !service || !is_exact_class(service, expected_impl_class)) {
+    return false;
+  }
+  out_service_root->reset(service);
+  return out_service_root->handle != 0;
+}
+
 bool resolve_service_owner(Il2CppClass* contract_class,
                            Il2CppClass* expected_impl_class,
-                           ScopedGcRoot* out_service_root) noexcept {
+                           ScopedGcRoot* out_service_root, ScopedGcRoot* observed_container = nullptr) noexcept {
   if (!contract_class || !expected_impl_class || !out_service_root) return false;
 
   const Il2CppType* map_type = g_state.cfg.class_get_type(g_state.cfg.map_scene_context_class);
@@ -404,24 +430,8 @@ bool resolve_service_owner(Il2CppClass* contract_class,
   ScopedGcRoot container_root(container);
   if (!container_root.handle) return false;
 
-  const Il2CppType* contract_type = g_state.cfg.class_get_type(contract_class);
-  if (!contract_type) return false;
-  Il2CppObject* contract_type_obj = g_state.cfg.type_get_object(contract_type);
-  if (!contract_type_obj) return false;
-  ScopedGcRoot contract_type_root(contract_type_obj);
-  if (!contract_type_root.handle) return false;
-
-  Il2CppObject* container_target = container_root.target();
-  Il2CppObject* contract_target = contract_type_root.target();
-  if (!container_target || !contract_target) return false;
-  void* resolve_args[1] = {contract_target};
-  Il2CppObject* service = nullptr;
-  if (!invoke_checked(g_state.cfg.container_resolve_method, container_target, resolve_args, &service) ||
-      !service || !is_exact_class(service, expected_impl_class)) {
-    return false;
-  }
-  out_service_root->reset(service);
-  return out_service_root->handle != 0;
+  if (observed_container) observed_container->reset(container_root.target());
+  return resolve_in_container(container_root, contract_class, expected_impl_class, out_service_root);
 }
 
 Il2CppObject* hook_auth_logout(Il2CppObject* self, const MethodInfo* method) noexcept {
@@ -841,8 +851,15 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
   }
 
   ScopedGcRoot player_root;
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  ScopedGcRoot research_container;
+  const uint64_t research_lease = pgr_research_progression_lease(now_bt);
+  auto *research_context = research_lease ? &research_container : nullptr;
+#else
+  ScopedGcRoot *research_context = nullptr;
+#endif
   if (!resolve_service_owner(g_state.cfg.player_contract_class,
-                             g_state.cfg.player_class, &player_root)) {
+                             g_state.cfg.player_class, &player_root, research_context)) {
     report_identity_gate("player-service-missing",now_bt);return;
   }
 
@@ -980,8 +997,37 @@ void api_tick_impl(uint64_t /*caller_now_ms*/, int32_t caller_tid) noexcept {
                         id_buf, id_len, name_buf, name_len);
     }
   }
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+  static bool research_identity_changed = false;
+  {
+    // Never sample a replacement identity in a process which previously saw another account.
+    static uint16_t first_id[PGR_ACCOUNTS_MAX_UTF16]{};
+    static uint16_t first_length = 0;
+    if (!first_length) {
+      first_length = id_len;
+      std::memcpy(first_id, id_buf, id_len * sizeof(uint16_t));
+    }
+    if (first_length != id_len || std::memcmp(first_id, id_buf, id_len * sizeof(uint16_t))) research_identity_changed = true;
+  }
+#endif
 #ifdef __ANDROID__
-  if (trainer_observed && pgr_local_api_trainer_requested()) pgr_local_api_trainer(player_root.target(), id_buf, id_len, name_buf, name_len, trainer_observed);
+  if (trainer_observed && pgr_local_api_trainer_requested()) {
+    pgr_local_api_trainer(player_root.target(), id_buf, id_len, name_buf, name_len, trainer_observed);
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+    const uint64_t start = clock_boottime_ms();
+    if (!research_identity_changed && research_lease && research_container.target() &&
+        pgr_research_progression_lease(start) == research_lease) {
+      void *contract = nullptr, *implementation = nullptr;
+      ScopedGcRoot bag;
+      if (pgr_research_bag_classes(&contract, &implementation) &&
+          resolve_in_container(research_container, static_cast<Il2CppClass*>(contract),
+                               static_cast<Il2CppClass*>(implementation), &bag)) {
+        pgr_research_bag_observed(bag.target(), player_root.target(), id_buf, id_len,
+                                  trainer_observed, research_lease, start);
+      }
+    }
+#endif
+  }
 #else
   (void) trainer_observed;
 #endif

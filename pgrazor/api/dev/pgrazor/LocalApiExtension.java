@@ -9,6 +9,7 @@ interface LocalApiExtension {
     boolean owns(String uri);
     Access authenticate(List<String> authorization);
     void listenerChanged(boolean running);
+    default void pokemonBagObserved(String packet) {}
     default void progressionObserved(String packet) {}
     default void accountVerified(String id) {}
     Page mount(Activity activity, LinearLayout parent);

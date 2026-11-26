@@ -15,6 +15,7 @@ public final class ResearchApiTest {
         persistence();
         observations();
         progression();
+        pokemonBag();
         discovery();
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
@@ -211,6 +212,47 @@ public final class ResearchApiTest {
         }
     }
 
+    private static void pokemonBag() throws Exception {
+        AtomicLong clock = new AtomicLong(100);
+        LocalApiData data = new LocalApiData(clock::get, clock::get);
+        data.enable();
+        ResearchPokemonBag bag = new ResearchPokemonBag(data);
+        ResearchObservations registry = new ResearchObservations(data, new ResearchProgression(data), bag);
+        ResearchDiscovery jobs = new ResearchDiscovery(clock::get, ignored -> null);
+        String query = "observe?contract=pokemon.bag.v1";
+        check(observationJob(jobs, registry, query).contains("verified_snapshot_unavailable"));
+        check(jobs.route(query + "&limit=2", true, "lease", () -> true, registry).code == 400);
+        check(jobs.route(query + "&fields=nickname", true, "lease", () -> true, registry).code == 400);
+        check(jobs.route(query + "&fields=cp.cp", true, "lease", () -> true, registry).code == 400);
+        data.seeIdentity("a", true);
+        bag.setLease(9);
+        clock.incrementAndGet();
+        check(!bag.accept("101|0062|9|10|15|25|390|15|0|9|1|0"));
+        check(!bag.accept("101|0061|8|10|15|25|390|15|0|9|1|0"));
+        check(!bag.accept("101|0061|9|0|15|25|390|15|0|9|1|0"));
+        check(!bag.accept("101|0061|9|10|0|25|390|15|0|9|1|0"));
+        check(!bag.accept("101|0061|9|10|15|25|390|15|0|9|1|1"));
+        check(bag.accept("101|0061|9|10|18446744073709551615|25|390|15|0|9|1|0"));
+        check(!bag.accept("101|0061|9|10|18446744073709551615|25|390|15|0|9|1|0"));
+        String observed = observationJob(jobs, registry, query);
+        check(observed.contains("\"instance_id\":\"18446744073709551615\"")
+              && observed.contains("\"total_collection_entries\":10")
+              && observed.contains("\"defense_iv\":0") && observed.contains("\"collection_complete\":null"));
+        check(observationJob(jobs, registry, query + "&offset=1").contains("\"items\":[]"));
+        clock.incrementAndGet();
+        check(bag.accept("102|0061|9|10|16|-1|-1|-1|-1|-1|-1|1"));
+        String egg = observationJob(jobs, registry, query + "&fields=is_egg.cp.favorite");
+        check(egg.contains("\"is_egg\":true") && egg.contains("\"cp\":null")
+              && egg.contains("\"favorite\":null") && !egg.contains("\"instance_id\""));
+        bag.setLease(10);
+        check(bag.latest() == null);
+        clock.incrementAndGet();
+        check(bag.accept("103|0061|10|10|15|25|390|15|0|9|1|0"));
+        data.seeIdentity("b", true);
+        check(bag.latest() == null);
+        check(!bag.accept("103|0061|10|10|15|25|390|15|0|9|1|0"));
+    }
+
     private static void progression() throws Exception {
         AtomicLong clock = new AtomicLong(100);
         LocalApiData data = new LocalApiData(clock::get, clock::get);
@@ -257,7 +299,7 @@ public final class ResearchApiTest {
         check(jobs.route(query + ".xp", true, "lease", () -> true, contracts).code == 400);
         String missing = observationJob(jobs, contracts, query);
         check(missing.contains("verified_snapshot_unavailable"));
-        check(observationJob(jobs, contracts, "observe?contract=pokemon.bag.v1").contains("approved_source_unavailable"));
+        check(observationJob(jobs, contracts, "observe?contract=pokemon.bag.v1").contains("verified_snapshot_unavailable"));
         data.seeIdentity("acct", true);
         clock.incrementAndGet();
         check(LocalApiTrainer.accept(data, "101|0061006300630074|0050"));

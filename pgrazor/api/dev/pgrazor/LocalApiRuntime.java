@@ -40,6 +40,8 @@ final class LocalApiRuntime {
         if (current != null && current.enabled()) current.loseIdentity();
     }
 
+    static void pokemonBagObserved(String packet) { if (extension != null) extension.pokemonBagObserved(packet); }
+
     static void progressionObserved(String packet) {
         if (extension != null) extension.progressionObserved(packet);
     }

@@ -206,3 +206,105 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
 #endif
  } catch (...) {}
 }
+
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+namespace {
+constexpr const char *kPair = "System.Collections.Generic.KeyValuePair<System.UInt64,Holoholo.Rpc.PokemonProto>";
+constexpr const char *kList = "System.Collections.Generic.LinkedList<System.Collections.Generic.KeyValuePair<System.UInt64,Holoholo.Rpc.PokemonProto>>";
+constexpr const char *kNode = "System.Collections.Generic.LinkedListNode<System.Collections.Generic.KeyValuePair<System.UInt64,Holoholo.Rpc.PokemonProto>>";
+constexpr const char *kMap = "Niantic.Holoholo.Collections.LinkedHashMap<System.UInt64,Holoholo.Rpc.PokemonProto>";
+constexpr const char *kPokemon = "Holoholo.Rpc.PokemonProto";
+
+void ensure_research_boot() {
+ if (ready) return;
+ const auto *api = static_cast<const PgrBootApi*>(pgrazor_runtime_bootstrap_api(1));
+ boot.version=1;boot.size=sizeof(boot);
+ require(api && api->snapshot(&boot)==0,"runtime unavailable");
+ ready=true;
+}
+
+void assert_type(void *object,const char *expected) {
+ auto getter=fn<void*(*)(void*)>(boot.meta.class_get_type);
+ require(typename_of(getter(klass(object)))==expected,"class mismatch");
+}
+
+template<class T>T optional_field(void *o, const char *name, const char *type, T unknown) {
+ try { return field<T>(o,name,type); } catch (...) { return unknown; }
+}
+
+std::string capture_bag(void *bag,void *owner,uint64_t started) {
+ require(clock_ms()-started<20,"capture deadline");
+ require(field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==owner,"bag owner mismatch");
+ Root map(field<void*>(bag,"esed",kMap));assert_type(map.get(),kMap);
+ Root list(field<void*>(map.get(),"list",kList));assert_type(list.get(),kList);
+ const int n=field<int32_t>(list.get(),"count","System.Int32");
+ const int version=field<int32_t>(list.get(),"version","System.Int32");
+ // An empty backing list can mean initialization is incomplete.
+ require(n>0 && n<=30000,"bag not ready");
+ Root head(field<void*>(list.get(),"head",kNode));assert_type(head.get(),kNode);
+ require(field<void*>(head.get(),"list",kList)==list.get(),"detached head");
+ void *get=method(head.get(),"get_Value",0);
+ require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(get,nullptr)&0x10)
+     && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(get))==kPair,"node getter signature");
+ Root pair(invoke(get,head.get()));assert_type(pair.get(),kPair);
+ const auto key=field<uint64_t>(pair.get(),"key","System.UInt64");
+ Root pokemon(field<void*>(pair.get(),"value",kPokemon));assert_type(pokemon.get(),kPokemon);
+ require(key && field<uint64_t>(pokemon.get(),"id_","System.UInt64")==key,"key mismatch");
+ const int egg=field<bool>(pokemon.get(),"isEgg_","System.Boolean");
+ const int species=optional_field<int32_t>(pokemon.get(),"pokemonId_","System.Int32",-1);
+ const int cp=egg ? -1 : optional_field<int32_t>(pokemon.get(),"cp_","System.Int32",-1);
+ const int attack=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualAttack_","System.Int32",-1);
+ const int defense=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualDefense_","System.Int32",-1);
+ const int stamina=egg ? -1 : optional_field<int32_t>(pokemon.get(),"individualStamina_","System.Int32",-1);
+ const int favorite=optional_field<uint8_t>(pokemon.get(),"favorite_","System.Boolean",255);
+ require(field<void*>(bag,"esej","Niantic.Holoholo.IPlayerService")==owner
+      && field<void*>(bag,"esed",kMap)==map.get() && field<void*>(map.get(),"list",kList)==list.get()
+      && field<void*>(list.get(),"head",kNode)==head.get()
+      && field<int32_t>(list.get(),"version","System.Int32")==version
+      && field<int32_t>(list.get(),"count","System.Int32")==n && clock_ms()-started<20,"bag changed");
+ auto iv=[](int value) { return value>=0 && value<=15 ? value : -1; };
+ return std::to_string(n)+"|"+std::to_string(key)+"|"+std::to_string(species>0?species:-1)+"|"+
+     std::to_string(cp>0?cp:-1)+"|"+std::to_string(iv(attack))+"|"+std::to_string(iv(defense))+"|"+
+     std::to_string(iv(stamina))+"|"+std::to_string(favorite<=1?favorite:-1)+"|"+std::to_string(egg);
+}
+}
+
+bool pgr_research_bag_classes(void **contract,void **implementation) noexcept {
+ try {
+  std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
+  if(!lock) return false;
+  ensure_research_boot();
+  *contract=cls("Niantic.Holoholo","IPokemonBag");
+  *implementation=cls("Niantic.Holoholo.Internal","PokemonBagImpl");
+  return *contract && *implementation;
+ } catch (...) { return false; }
+}
+
+void pgr_research_bag_observed(void *bag,void *player,const uint16_t *id,uint16_t length,
+                              uint64_t observed,uint64_t lease,uint64_t started) noexcept {
+ try {
+  if (!bag || !player || !id || !length || length>256 || lease!=pgr_research_progression_lease(clock_ms())) return;
+  std::unique_lock<std::mutex> lock(stats_mutex,std::try_to_lock);
+  if(!lock) return;
+  ensure_research_boot();
+  Root owner(player), storage(bag);
+  std::string sample=capture_bag(storage.get(),owner.get(),started);
+  if (lease!=pgr_research_progression_lease(clock_ms())) return;
+  const auto *accounts=pgrazor_accounts_api(1);
+  const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
+  if(!accounts||!transport)return;
+  pgrazor_account_snapshot_v1_t identity{};
+  accounts->api_sample(&identity);
+  if (!identity.has_identity || identity.logging_out || identity.queue_overflow_latched
+       || identity.last_identity_ms!=observed || identity.id_len!=length
+       || std::memcmp(identity.id,id,length*sizeof(uint16_t))) return;
+  std::string packet=std::to_string(observed)+"|";
+  const char digits[]="0123456789abcdef";
+  for(uint16_t i=0;i<length;++i) for(int shift=12;shift>=0;shift-=4) packet+=digits[(id[i]>>shift)&15];
+  packet+="|"+std::to_string(lease)+"|"+sample;
+  const char event[]="research-pokemon-bag";
+  PgrRuntimeTransportString args[]={{event,sizeof(event)-1},{packet.data(),uint32_t(packet.size())}};
+  transport->emit(19,nullptr,0,args,2);
+ } catch (...) {}
+}
+#endif
