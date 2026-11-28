@@ -34,6 +34,7 @@ public final class LocalApiPokemonTest {
         long lease = controller.generation();
         try {
             check(http(port, "", "").startsWith("HTTP/1.1 401"));
+            check(http(port, "/api/v1/eggs", "").startsWith("HTTP/1.1 401"));
             String unready = http(port, "", TOKEN);
             check(unready.startsWith("HTTP/1.1 503") && unready.contains("Verified account is unavailable"));
             data.seeIdentity("a", true);
@@ -51,19 +52,32 @@ public final class LocalApiPokemonTest {
             check(lease > 0 && status.contains("\"provider_state\":\"no_snapshot\""));
             check(HttpPreviewServerTest.request(port, "GET", "/api/v1/status", "Authorization: Bearer " + TOKEN + "\r\n")
                 .contains("\"provider_state\":\"acquiring\""));
-            try (Socket two = request(port, "?include_eggs=false", TOKEN)) {
+            try (Socket two = request(port, "/api/v1/eggs", TOKEN)) {
                 Thread.sleep(150);
                 check(starts.get() == 1);
                 capture(provider, clock, revision.get(), lease, 623);
                 String first = one.get(6, TimeUnit.SECONDS);
-                String filtered = read(two);
+                String eggs = read(two);
                 check(first.startsWith("HTTP/1.1 200") && first.length() > 8192);
                 check(first.contains("\"source_entry_count\":623") && first.contains("\"classified_egg_rows\":1"));
                 check(first.contains("\"eggs\":[{\"instance_id\":\"623\"") && first.contains("\"defense_iv\":0"));
-                check(filtered.startsWith("HTTP/1.1 200") && !filtered.contains("\"eggs\":"));
+                check(eggs.startsWith("HTTP/1.1 200") && eggs.contains("\"coverage_scope\":\"pokemon_bag_egg_membership\"")
+                    && eggs.contains("\"coverage\":\"complete\"") && eggs.contains("\"incubators\":null")
+                    && eggs.contains("\"eggs\":[{\"instance_id\":\"623\",\"is_egg\":true,\"egg_type_id\":2,"
+                        + "\"required_distance_km\":7.0,\"assignment_present\":false,"
+                        + "\"raw_start_distance_km\":0.0,\"raw_target_distance_km\":7.0}]")
+                    && !eggs.contains("\"pokemon\":[") && !first.contains("egg_type_id"));
+                check(first.split("\"snapshot_id\":", 2)[1].split(",", 2)[0]
+                    .equals(eggs.split("\"snapshot_id\":", 2)[1].split(",", 2)[0]));
             }
             check(HttpPreviewServerTest.request(port, "GET", "/api/v1/status", "Authorization: Bearer " + TOKEN + "\r\n")
                 .contains("\"pokemon\":{\"supported\":true,\"ready\":true,\"coverage\":\"complete\""));
+            String filtered = http(port, "?include_eggs=false", TOKEN);
+            check(filtered.startsWith("HTTP/1.1 200") && !filtered.contains("\"eggs\":"));
+            String eggProjection = http(port, "/api/v1/eggs?fields=instance_id,required_distance_km", TOKEN);
+            check(eggProjection.contains("\"eggs\":[{\"instance_id\":\"623\",\"required_distance_km\":7.0}]"));
+            check(http(port, "/api/v1/eggs?fields=cp", TOKEN).startsWith("HTTP/1.1 400"));
+            check(http(port, "/api/v1/eggs?include_eggs=false", TOKEN).startsWith("HTTP/1.1 400"));
             check(http(port, "/618", TOKEN).contains("\"instance_id\":\"618\""));
             String projected = http(port, "/618?fields=instance_id,defense_iv,iv_percent", TOKEN);
             check(projected.contains("\"data\":{\"instance_id\":\"618\",\"defense_iv\":0,\"iv_percent\":46.67}"));
@@ -72,22 +86,35 @@ public final class LocalApiPokemonTest {
             check(starts.get() == 1);
             check(http(port, "/18446744073709551616", TOKEN).startsWith("HTTP/1.1 400"));
             check(http(port, "?refresh=true&refresh=false", TOKEN).startsWith("HTTP/1.1 400"));
-            CompletableFuture<String> refreshed = fetch(port, "?refresh=true");
-            waitFor(() -> starts.get() == 2);
+            try (Socket leaving = request(port, "?refresh=true", TOKEN)) {
+                waitFor(() -> starts.get() == 2);
+                try (Socket remaining = request(port, "/api/v1/eggs", TOKEN)) {
+                    Thread.sleep(150);
+                    check(http(port, "", TOKEN).startsWith("HTTP/1.1 429"));
+                    long jointRevision = revision.get();
+                    leaving.close();
+                    Thread.sleep(150);
+                    capture(provider, clock, jointRevision, lease, 2);
+                    check(read(remaining).startsWith("HTTP/1.1 200"));
+                    check(starts.get() == 2);
+                }
+            }
+            CompletableFuture<String> refreshed = fetch(port, "/api/v1/eggs?refresh=true");
+            waitFor(() -> starts.get() == 3);
             provider.accept("export|" + revision.get() + "|" + lease + "|0061|failed|structure_changed");
             check(refreshed.get(5, TimeUnit.SECONDS).startsWith("HTTP/1.1 409"));
             CompletableFuture<String> over = fetch(port, "");
-            waitFor(() -> starts.get() == 3);
+            waitFor(() -> starts.get() == 4);
             provider.accept("export|" + revision.get() + "|" + lease + "|0061|failed|source_limit");
             check(over.get(5, TimeUnit.SECONDS).contains("RESOURCE_CAPTURE_LIMIT"));
 
             try (Socket abandoned = request(port, "?refresh=true", TOKEN)) {
-                waitFor(() -> starts.get() == 4);
+                waitFor(() -> starts.get() == 5);
             }
             waitFor(() -> revision.get() == 0);
 
             CompletableFuture<String> late = fetch(port, "");
-            waitFor(() -> starts.get() == 5);
+            waitFor(() -> starts.get() == 6);
             for (int i = 0; i < 7; ++i) {
                 long now = clock.addAndGet(5000);
                 check(data.publish(data.trainer, "a", now, LocalApiData.Coverage.PARTIAL, null));
@@ -95,7 +122,7 @@ public final class LocalApiPokemonTest {
             check(late.get(5, TimeUnit.SECONDS).startsWith("HTTP/1.1 504"));
 
             CompletableFuture<String> switched = fetch(port, "");
-            waitFor(() -> starts.get() == 6);
+            waitFor(() -> starts.get() == 7);
             data.seeIdentity("b", true);
             check(switched.get(5, TimeUnit.SECONDS).startsWith("HTTP/1.1 409"));
             check(revision.get() == 0);
@@ -103,7 +130,7 @@ public final class LocalApiPokemonTest {
             clock.incrementAndGet();
             check(LocalApiTrainer.accept(data, clock.get() + "|0062|0042"));
             try (Socket pending = request(port, "", TOKEN)) {
-                waitFor(() -> starts.get() == 7);
+                waitFor(() -> starts.get() == 8);
                 controller.rotateToken();
                 check(!read(pending).startsWith("HTTP/1.1 200") && revision.get() == 0);
             }
@@ -114,7 +141,7 @@ public final class LocalApiPokemonTest {
             clock.incrementAndGet();
             check(LocalApiTrainer.accept(data, clock.get() + "|0062|0042"));
             try (Socket pending = request(port, "", rotated)) {
-                waitFor(() -> starts.get() == 8);
+                waitFor(() -> starts.get() == 9);
                 controller.stop();
                 check(!read(pending).startsWith("HTTP/1.1 200") && revision.get() == 0);
             }
@@ -131,7 +158,9 @@ public final class LocalApiPokemonTest {
             StringBuilder rows = new StringBuilder();
             for (int index = offset; index < end; index++) {
                 if (index != offset) rows.append(';');
-                rows.append(index + 1).append(index + 1 == count ? "|-1|-1|-1|-1|-1|0|1" : "|25|100|15|0|6|0|0");
+                rows.append(index + 1).append(index + 1 == count
+                    ? "|-1|-1|-1|-1|-1|0|1|-1|-1|-1|-1|-1|-1|-1|-1|-|-1|-1|-1|-1|-1|-1|2|7.000000|0|0|7.000000"
+                    : "|25|100|15|0|6|0|0");
             }
             provider.accept("export|" + revision + "|" + lease + "|0061|" + (end == count ? "done" : "slice")
                 + "|" + count + "|" + offset + "|" + start + "|" + clock.incrementAndGet() + "|1|" + rows);
@@ -159,7 +188,8 @@ public final class LocalApiPokemonTest {
     private static Socket request(int port, String path, String token) throws Exception {
         Socket socket = new Socket("127.0.0.1", port);
         socket.setSoTimeout(8000);
-        socket.getOutputStream().write(("GET /api/v1/pokemon" + path + " HTTP/1.1\r\nHost: 127.0.0.1:" + port
+        String requestPath = path.startsWith("/api/v1/") ? path : "/api/v1/pokemon" + path;
+        socket.getOutputStream().write(("GET " + requestPath + " HTTP/1.1\r\nHost: 127.0.0.1:" + port
             + "\r\nAuthorization: Bearer " + token + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
         return socket;
     }

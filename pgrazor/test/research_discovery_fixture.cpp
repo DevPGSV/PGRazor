@@ -14,7 +14,10 @@ Type bag{"Niantic.Holoholo", "SyntheticInventoryBag", "Niantic.Holoholo.Syntheti
 Type entry{"Holoholo.Rpc", "SyntheticJournalEntry", "Holoholo.Rpc.SyntheticJournalEntry"};
 Type denied{"Niantic.Holoholo", "SyntheticAuthSession", "Niantic.Holoholo.SyntheticAuthSession"};
 Type elsewhere{"Unrelated.Library", "SyntheticInventory", "Unrelated.Library.SyntheticInventory"};
-Type *classes[]{&bag, &entry, &denied, &elsewhere};
+Type itemBag{"Niantic.Holoholo.Internal", "ItemBagImpl", "Niantic.Holoholo.Internal.ItemBagImpl"};
+Type itemBagState{"", "hwl", "Niantic.Holoholo.Internal.ItemBagImpl.hwl"};
+Type *classes[]{&bag, &entry, &denied, &elsewhere, &itemBag};
+const char *imageName = "holo-fixture.dll";
 Field fields[]{{"OwnedCount", "System.Int32"}, {"AuthToken", "System.String"}};
 Method method{"GetJournalEntry", "Holoholo.Rpc.SyntheticJournalEntry", "System.Int64"};
 void *images[]{&classes};
@@ -28,6 +31,10 @@ void *exact(void *, const char *ns, const char *name) {
     for (auto *type : classes)
         if (!std::strcmp(ns, type->ns) && !std::strcmp(name, type->name)) return type;
     return nullptr;
+}
+void *nestedType(void *owner, void **state) {
+    if (owner != &itemBag || *state) return nullptr;
+    return *state = &itemBagState;
 }
 void *classType(void *klass) { return const_cast<char *>(static_cast<Type *>(klass)->full); }
 char *typeNameFixture(const void *type) { return ::strdup(static_cast<const char *>(type)); }
@@ -57,6 +64,7 @@ int snapshot(PgrBootBinding *boot) {
     BIND(meta, domain_get_assemblies, assemblies);
     BIND(meta, assembly_get_image, image);
     BIND(meta, class_from_name, exact);
+    BIND(meta, class_get_nested_types, nestedType);
     BIND(meta, class_get_type, classType);
     BIND(meta, type_get_name, typeNameFixture);
     BIND(meta, mem_free, std::free);
@@ -76,7 +84,7 @@ int snapshot(PgrBootBinding *boot) {
 }
 
 extern "C" {
-const char *il2cpp_image_get_name(void *) { return "holo-fixture.dll"; }
+const char *il2cpp_image_get_name(void *) { return imageName; }
 const char *il2cpp_class_get_name(void *klass) { return static_cast<Type *>(klass)->name; }
 const char *il2cpp_class_get_namespace(void *klass) { return static_cast<Type *>(klass)->ns; }
 size_t il2cpp_image_get_class_count(const void *) { return sizeof(classes) / sizeof(classes[0]); }
@@ -117,6 +125,15 @@ int main() {
     auto typed = observe("type", "", bag.ns, bag.name, "fields", "", 0, 10);
     assert(typed.find("System.Int32") != std::string::npos && typed.find("AuthToken") == std::string::npos);
     assert(observe("type", "", bag.ns, "Missing", "methods", "", 0, 10).find("type_not_found") != std::string::npos);
+    constexpr const char *nestedName = "ItemBagImpl.hwl";
+    assert(observe("type", "", itemBag.ns, nestedName, "fields", "", 0, 10)
+        .find("type_not_found") != std::string::npos);
+    imageName = "holo-game-player-model.dll";
+    auto nested = observe("type", imageName, itemBag.ns, nestedName, "fields", "", 0, 10);
+    assert(nested.find("OwnedCount") != std::string::npos && nested.find("AuthToken") == std::string::npos);
+    assert(nested.find(itemBagState.full) != std::string::npos);
+    assert(observe("type", imageName, itemBag.ns, "ItemBagImpl.Other", "fields", "", 0, 10)
+        .find("type_not_found") != std::string::npos);
     assert(attachments == 0);
     ready = false;
     assert(observe("support", "", "", "", "", "", 0, 10).find("runtime_not_ready") != std::string::npos);

@@ -35,9 +35,14 @@ class Capabilities(TypedDict, total=False):
 class ResearchError(RuntimeError):
     """Redacted failure with optional HTTP status."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, code: str | None = None):
         super().__init__(message)
         self.status = status
+        self.code = code
+
+
+class InvalidResponse(ResearchError):
+    """JSON or schema rejected after a response arrived."""
 
 
 class _PollingTimeout(ResearchError):
@@ -83,6 +88,18 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class Client:
+    _prefix = "/research/v1/"
+    _timeout_limit = 30
+    _response_limit = _MAX_RESPONSE
+    _realm = "Research"
+
+    @classmethod
+    def configured(cls, *, base=None, token=None, token_file=None, interactive=False, **options):
+        from .config import resolve_config
+        base, token = resolve_config(cls._realm.lower(), base=base, token=token,
+                                     token_file=token_file, interactive=interactive)
+        return cls(base, token, **options)
+
     def __init__(self, base: str, token: str, *, timeout: float = 4):
         try:
             parsed = urlsplit(base)
@@ -94,50 +111,72 @@ class Client:
         except ValueError:
             raise ResearchError("Expected http://IPv4:port") from None
         if not isinstance(token, str) or not _TOKEN.fullmatch(token):
-            raise ResearchError("Invalid Research bearer format")
-        if not 0 < timeout <= 30:
-            raise ResearchError("HTTP timeout must be between zero and 30 seconds")
+            raise ResearchError(f"Invalid {self._realm} bearer format")
+        if not 0 < timeout <= self._timeout_limit:
+            raise ResearchError(f"HTTP timeout must be between zero and {self._timeout_limit} seconds")
         self.base = f"http://{self.host}:{parsed.port}"
         self._token = token
         self.timeout = timeout
+        self.last_response_bytes = 0
+        self.response_bytes = 0
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
 
     def _request(self, endpoint: str, method="GET", *, timeout=None, **arguments) -> dict[str, Any]:
+        self.last_response_bytes = 0
         pairs = [(key, str(value)) for key, value in arguments.items() if value is not None]
         if any(not _PARAM.fullmatch(key) or self._token in value
                or not (_PARAM.fullmatch(value) or key == "fields"
                        and re.fullmatch(r"[a-z_.]{1,128}", value)) for key, value in pairs):
             raise ResearchError("Invalid Research parameter")
         query = "&".join(f"{key}={value}" for key, value in pairs)
-        path = self.base + "/research/v1/" + endpoint + ("?" + query if query else "")
+        path = self.base + self._prefix + endpoint + ("?" + query if query else "")
         request = Request(path, method=method, headers={"Authorization": "Bearer " + self._token})
         try:
             with self._opener.open(request, timeout=self.timeout if timeout is None else timeout) as reply:
-                payload = reply.read(_MAX_RESPONSE + 1)
-            if len(payload) > _MAX_RESPONSE:
-                raise ResearchError("Research response exceeds the byte limit")
+                payload = reply.read(self._response_limit + 1)
+                self.last_response_bytes = len(payload)
+                self.response_bytes += len(payload)
+            if len(payload) > self._response_limit:
+                raise InvalidResponse(f"{self._realm} response exceeds the byte limit")
             value = json.loads(payload)
         except HTTPError as error:
-            error.close()
-            message = "Research credential rejected or expired" if error.code == 401 else "Research request rejected"
-            raise ResearchError(message, error.code) from None
-        except (OSError, URLError, ValueError):
-            raise ResearchError("Research endpoint unavailable or returned invalid JSON") from None
+            code = None
+            try:
+                payload = error.read(2049)
+                self.last_response_bytes = len(payload)
+                self.response_bytes += len(payload)
+                if len(payload) <= 2048:
+                    envelope = json.loads(payload)
+                    if isinstance(envelope, dict):
+                        detail = envelope.get("error")
+                        candidate = detail.get("code") if isinstance(detail, dict) else None
+                        if isinstance(candidate, str) and re.fullmatch(r"[A-Z_]{1,32}", candidate):
+                            code = candidate
+            except (OSError, ValueError, UnicodeError):
+                pass
+            finally:
+                error.close()
+            message = f"{self._realm} credential rejected or expired" if error.code == 401 else f"{self._realm} request rejected"
+            raise ResearchError(message, error.code, code) from None
+        except (OSError, URLError):
+            raise ResearchError(f"{self._realm} endpoint unavailable") from None
+        except (ValueError, UnicodeError):
+            raise InvalidResponse(f"{self._realm} response is not valid JSON") from None
         if not isinstance(value, dict) or self._token in json.dumps(value):
-            raise ResearchError("Invalid or unsafe Research response")
+            raise InvalidResponse(f"Invalid or unsafe {self._realm} response")
         return value
 
     def status(self) -> ResearchStatus:
         value = self._request("status")
         if type(value.get("ready")) is not bool:
-            raise ResearchError("Invalid Research status response")
+            raise InvalidResponse("Invalid Research status response")
         return cast(ResearchStatus, value)
 
     def capabilities(self) -> Capabilities:
         value = self._request("capabilities")
         ops = value.get("operations")
         if not isinstance(ops, list) or any(not isinstance(op, str) for op in ops):
-            raise ResearchError("Invalid Research capabilities response")
+            raise InvalidResponse("Invalid Research capabilities response")
         return cast(Capabilities, value)
 
     def offline_type(self, declaration_id: str) -> dict[str, Any]:

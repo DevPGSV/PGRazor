@@ -358,13 +358,17 @@ public final class ResearchApiTest {
         check(inventory.accept("101|0061|9|0|350|1"));
         String value = observationJob(jobs, registry, query);
         check(value.contains("\"coverage\":\"partial\"") && value.contains("\"collection_complete\":null")
-            && value.contains("\"raw_total_items\":0") && value.contains("\"raw_max_items\":350"));
+            && value.contains("\"raw_total_items\":0") && value.contains("\"raw_max_items\":350")
+            && value.contains("\"raw_poke_ball_quantity\":null"));
         check(observationJob(jobs, registry, query + "&offset=1").contains("\"items\":[]"));
         check(jobs.route(query + "&fields=storage_usage", true, "lease", () -> true, registry).code == 400);
         inventory.leaseChanged(10);
         check(inventory.latest() == null);
         clock.incrementAndGet();
-        check(inventory.accept("102|0061|10|5|350|0"));
+        check(!inventory.accept("102|0061|10|5|350|0|-1"));
+        check(inventory.accept("102|0061|10|5|350|0|0"));
+        check(observationJob(jobs, registry, query + "&fields=raw_poke_ball_quantity")
+            .contains("\"raw_poke_ball_quantity\":0"));
         data.seeIdentity("b", true);
         check(inventory.latest() == null);
     }

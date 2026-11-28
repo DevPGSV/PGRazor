@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Import a private reference catalog and record bounded live structural observations."""
 import argparse
-import getpass
 import json
 from pathlib import Path
 import sqlite3
@@ -37,7 +36,8 @@ def main():
     compare = actions.add_parser("compare")
     compare.add_argument("observation", type=int)
     live = actions.add_parser("observe")
-    live.add_argument("--base", required=True)
+    live.add_argument("--base")
+    live.add_argument("--token-file", type=Path)
     live.add_argument("op", choices=("support", "assemblies", "search", "type"))
     for key in ("assembly", "ns", "name", "filter"):
         live.add_argument("--" + key)
@@ -73,7 +73,7 @@ def main():
             elif args.action == "compare":
                 result = catalog.compare(args.observation)
             else:
-                client = Client(args.base, getpass.getpass("Research bearer token: "))
+                client = Client.configured(base=args.base, token_file=args.token_file, interactive=True)
                 query = DiscoveryQuery(**{key: getattr(args, key) for key in DiscoveryQuery.__dataclass_fields__})
                 result = []
                 for sent, job in client.pages(query, max_pages=args.pages):

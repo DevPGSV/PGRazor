@@ -27,6 +27,7 @@ final class LocalApiController {
     private final LocalApiData data;
     private final LocalApiExtension extension;
     private final LocalApiPokemon pokemon;
+    private final java.util.function.Supplier<LocationState> location;
     private final Object stateLock = new Object();
     // Zero is reserved for inactive collection demand. The first listener must have a live lease.
     private volatile long generation = 1;
@@ -47,6 +48,12 @@ final class LocalApiController {
     }
 
     LocalApiController(Store store, LocalApiData data, LocalApiExtension extension, LocalApiPokemon pokemon) {
+        this(store, data, extension, pokemon, null);
+    }
+
+    LocalApiController(Store store, LocalApiData data, LocalApiExtension extension, LocalApiPokemon pokemon,
+                       java.util.function.Supplier<LocationState> location) {
+        this.location = location;
         this.pokemon = pokemon;
         this.store = store;
         this.data = data;
@@ -103,7 +110,7 @@ final class LocalApiController {
         if (previous != null) previous.awaitUninterruptibly();
         if (generation != epoch) throw new IOException("Local API start was cancelled");
         LocalApiServer bound = LocalApiServer.start(settings.config.socketAddress(), settings.token,
-            LocalApiRoutes.production(data, pokemon), () -> generation == epoch, extension);
+            LocalApiRoutes.production(data, pokemon, location), () -> generation == epoch, extension);
         synchronized (stateLock) {
             if (generation == epoch) {
                 retiring = null;

@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Export a private Pokémon sample or complete non-atomic collection."""
 import argparse
-import getpass
 import json
-import os
 from pathlib import Path
-import stat
 
 from research_sdk import Client, ResearchError
 from research_sdk.pokemon_normalization import normalize_export
@@ -14,7 +11,7 @@ from research_sdk.pokemon_export import complete_snapshot, partial_sample, save_
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True)
+    parser.add_argument("--base")
     parser.add_argument("--token-file", type=Path)
     scope = parser.add_mutually_exclusive_group(required=True)
     scope.add_argument("--partial", action="store_true", help="export a bounded sample")
@@ -34,15 +31,7 @@ def main() -> int:
     if args.partial and args.selection != "all":
         parser.error("--selection requires --complete")
     try:
-        if args.token_file:
-            with args.token_file.open("rb") as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                    raise ResearchError("Credential file must be owner-only")
-                token = stream.read(128).decode("ascii").strip()
-        else:
-            token = getpass.getpass("Research bearer token: ")
-        client = Client(args.base, token)
+        client = Client.configured(base=args.base, token_file=args.token_file, interactive=True)
         result = (complete_snapshot(client, page_size=args.limit, selection=args.selection, iv_percent=args.iv_percent)
                   if args.complete else partial_sample(client, limit=args.limit, iv_percent=args.iv_percent))
         if args.normalize:

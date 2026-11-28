@@ -18,7 +18,8 @@ final class LocalApiRuntime {
         extension = LocalApiExtensionFactory.create(app, data);
         pokemon = new LocalApiPokemon(data, SystemClock::elapsedRealtime, System::currentTimeMillis,
             NativeCore::collectionRequest, () -> pokemonLabels(app));
-        controller = new LocalApiController(new LocalApiStore(app), data, extension, pokemon);
+        controller = new LocalApiController(new LocalApiStore(app), data, extension, pokemon,
+            () -> LocationState.capture(Control.engine, Control.desiredEnabled()));
         settings = new LocalApiSettingsModel(controller);
     }
 

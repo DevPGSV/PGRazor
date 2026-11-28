@@ -74,6 +74,10 @@ bool reviewedBreadType(const std::string &ns, const std::string &name) {
         && (name == "BreadMoveSlotProto" || name == "BreadModeEnum.Types.Modifier");
 }
 
+bool reviewedItemBagNestedType(const std::string &ns, const std::string &name) {
+    return ns == "Niantic.Holoholo.Internal" && name == "ItemBagImpl.hwl";
+}
+
 std::string quoted(const std::string &value) {
     if (value.empty() || redacted(value)) return "null";
     std::string out = "\"";
@@ -164,29 +168,32 @@ std::string clsRow(const PgrBootBinding &boot, void *klass, const std::string &a
         + ",\"enum\":" + flag(fn<bool (*)(void *)>(boot.meta.class_is_enum)(klass)) + "}";
 }
 
+void *nestedChild(const PgrBootBinding &boot, const Exports &x, void *owner, const char *name) {
+    if (!owner || !x.className || !boot.meta.class_get_nested_types) return nullptr;
+    auto nested = fn<Iterate>(boot.meta.class_get_nested_types);
+    void *iter = nullptr;
+    void *match = nullptr;
+    for (size_t i = 0; i < PGR_MD_SCAN_MAX; i++) {
+        void *candidate = nested(owner, &iter);
+        if (!candidate) return match;
+        if (label(x.className(candidate)) == name) {
+            if (match && match != candidate) return nullptr;
+            match = candidate;
+        }
+    }
+    return nullptr;
+}
+
 void *exactType(const PgrBootBinding &boot, const Exports &x, void *image,
                 const std::string &ns, const std::string &name) {
     auto fromName = fn<void *(*)(void *, const char *, const char *)>(boot.meta.class_from_name);
-    if (!reviewedBreadType(ns, name) || name == "BreadMoveSlotProto")
-        return fromName(image, ns.c_str(), name.c_str());
-    if (!x.className || !boot.meta.class_get_nested_types) return nullptr;
-    auto nested = fn<Iterate>(boot.meta.class_get_nested_types);
-    void *owner = fromName(image, ns.c_str(), "BreadModeEnum");
-    for (const char *part : {"Types", "Modifier"}) {
-        if (!owner) return nullptr;
-        void *iter = nullptr;
-        void *match = nullptr;
-        for (size_t i = 0; i < PGR_MD_SCAN_MAX; i++) {
-            void *candidate = nested(owner, &iter);
-            if (!candidate) break;
-            if (label(x.className(candidate)) == part) {
-                if (match && match != candidate) return nullptr;
-                match = candidate;
-            }
-        }
-        owner = match;
+    if (reviewedItemBagNestedType(ns, name))
+        return nestedChild(boot, x, fromName(image, ns.c_str(), "ItemBagImpl"), "hwl");
+    if (reviewedBreadType(ns, name) && name == "BreadModeEnum.Types.Modifier") {
+        void *owner = fromName(image, ns.c_str(), "BreadModeEnum");
+        return nestedChild(boot, x, nestedChild(boot, x, owner, "Types"), "Modifier");
     }
-    return owner;
+    return fromName(image, ns.c_str(), name.c_str());
 }
 
 std::string missing(const char *reason) {
@@ -309,6 +316,7 @@ std::string observe(const std::string &op, const std::string &assembly, const st
             if (!page.add(quoted(imageName), limit)) return page.json(int(i), {}, "page_limit", imagesExamined);
         } else if (op == "type") {
             if (reviewedBreadType(ns, name) && imageName != "holo-protos.dll") continue;
+            if (reviewedItemBagNestedType(ns, name) && imageName != "holo-game-player-model.dll") continue;
             void *candidate = exactType(boot, x, image, ns, name);
             if (candidate) {
                 if (found && candidate != found) return missing("ambiguous_type");

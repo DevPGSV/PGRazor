@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Compare authenticated Research API declarations with a private local catalog."""
 import argparse
-import getpass
-import ipaddress
 import json
 import runpy
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from research_sdk import Client, ResearchError
+from research_sdk.config import resolve_config
 
 
 def run(base, catalog, token):
@@ -59,23 +57,13 @@ def run(base, catalog, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="http://IPv4:port")
+    parser.add_argument("--base", help="http://IPv4:port")
     parser.add_argument("--catalog", required=True, type=Path)
+    parser.add_argument("--token-file", type=Path)
     args = parser.parse_args()
     try:
-        base = urlsplit(args.base)
-        if (base.scheme != "http" or not base.hostname or base.username is not None
-                or base.password is not None or base.query or base.fragment
-                or base.path not in ("", "/") or not base.port):
-            raise ValueError("Expected http://IPv4:port")
-        ipaddress.IPv4Address(base.hostname)
-    except ValueError:
-        parser.error("--base must be http://IPv4:port")
-    token = getpass.getpass("Research bearer token: ")
-    if len(token) != 43 or not token.isascii() or any(not (c.isalnum() or c in "-_") for c in token):
-        parser.error("Invalid token format")
-    try:
-        result = run(f"http://{base.hostname}:{base.port}", args.catalog, token)
+        base, token = resolve_config("research", base=args.base, token_file=args.token_file)
+        result = run(base, args.catalog, token)
         print(json.dumps(result).replace(token, "[redacted]"))
         return 0 if result["ok"] else 1
     except ResearchError as failure:

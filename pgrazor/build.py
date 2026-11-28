@@ -208,8 +208,8 @@ def build_preview(classes, controls_jar, jars):
         '-classpath', str(ANDROID)+os.pathsep+classpath, '-d', preview_classes, *preview_sources)
     run('javac', '-encoding', 'UTF-8', '-source', '8', '-target', '8',
         '-classpath', classpath, '-d', BUILD/'tests',
-        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java', ROOT/'test/LocalApiTrainerTest.java', ROOT/'test/LocalApiWebSocketTest.java', ROOT/'test/LocalApiPokemonTest.java')
-    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest', 'LocalApiTrainerTest', 'LocalApiWebSocketTest', 'LocalApiPokemonTest'):
+        ROOT/'test/HttpPreviewServerTest.java', ROOT/'test/LocalApiControllerTest.java', ROOT/'test/LocalApiSettingsModelTest.java', ROOT/'test/LocalApiTrainerTest.java', ROOT/'test/LocalApiWebSocketTest.java', ROOT/'test/LocalApiPokemonTest.java', ROOT/'test/LocalApiLocationTest.java')
+    for test in ('HttpPreviewServerTest', 'LocalApiControllerTest', 'LocalApiSettingsModelTest', 'LocalApiTrainerTest', 'LocalApiWebSocketTest', 'LocalApiPokemonTest', 'LocalApiLocationTest'):
         run('java', '-cp', str(BUILD/'tests')+os.pathsep+classpath, 'dev.pgrazor.'+test)
     preview_jar = classes/'preview.jar'
     class_jar(preview_jar, preview_classes)

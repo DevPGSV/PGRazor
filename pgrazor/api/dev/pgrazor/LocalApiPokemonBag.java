@@ -18,10 +18,13 @@ final class LocalApiPokemonBag {
         final boolean egg;
         final Double cpMultiplier;
         final Long creationTimeMs;
+        final Integer eggType;
+        final Double requiredDistanceKm, rawStartDistanceKm, rawTargetDistanceKm;
+        final Boolean assignmentPresent;
 
         Row(String packet) {
             String[] f = packet.split("\\|", -1);
-            if (f.length != 8 && f.length != 17 && f.length != 23) throw new IllegalArgumentException();
+            if (f.length != 8 && f.length != 17 && f.length != 23 && f.length != 26 && f.length != 28) throw new IllegalArgumentException();
             long instance = Long.parseUnsignedLong(f[0]);
             if (instance == 0) throw new IllegalArgumentException();
             instanceId = Long.toUnsignedString(instance);
@@ -48,18 +51,35 @@ final class LocalApiPokemonBag {
             cpMultiplier = multiplier == -1 ? null : multiplier;
             creationTimeMs = creation == -1 ? null : creation;
             nickname = extended ? decodeNickname(f[16]) : null;
-            boolean display = f.length == 23;
+            boolean display = f.length >= 23;
             shiny = display ? flag(f[17]) : null;
             form = display ? bounded(f[18], 0, Integer.MAX_VALUE) : null;
             costume = display ? bounded(f[19], 0, Integer.MAX_VALUE) : null;
             gender = display ? bounded(f[20], 0, Integer.MAX_VALUE) : null;
             alignment = display ? bounded(f[21], 0, Integer.MAX_VALUE) : null;
             breadMode = display ? bounded(f[22], 0, Integer.MAX_VALUE) : null;
+            boolean eggDetails = f.length >= 26;
+            if (eggDetails && !egg) throw new IllegalArgumentException();
+            eggType = eggDetails ? bounded(f[23], 0, Integer.MAX_VALUE) : null;
+            double distance = eggDetails ? Double.parseDouble(f[24]) : -1.0;
+            if (distance != -1.0 && (!Double.isFinite(distance) || distance <= 0 || distance > 100))
+                throw new IllegalArgumentException();
+            requiredDistanceKm = distance == -1.0 ? null : distance;
+            assignmentPresent = eggDetails ? flag(f[25]) : null;
+            rawStartDistanceKm = f.length == 28 ? rawDistance(f[26]) : null;
+            rawTargetDistanceKm = f.length == 28 ? rawDistance(f[27]) : null;
             if (egg && (cp != null || attack != null || defense != null || stamina != null
                     || hp != null || maxHp != null || fastMove != null || chargedMove != null
                     || secondChargedMove != null || lucky != null || cpMultiplier != null
                     || shiny != null || form != null || costume != null || gender != null || alignment != null || breadMode != null))
                 throw new IllegalArgumentException();
+        }
+
+        private static Double rawDistance(String value) {
+            double parsed = Double.parseDouble(value);
+            if (parsed == -1) return null;
+            if (!Double.isFinite(parsed) || parsed < 0) throw new IllegalArgumentException();
+            return parsed;
         }
 
         static final String[] KEYS = ("instance_id species_id cp attack_iv defense_iv stamina_iv favorite is_egg "

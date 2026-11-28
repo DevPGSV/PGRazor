@@ -29,7 +29,7 @@ final class ResearchObservations {
         charged_move_id("integer"), second_charged_move_id("integer"), lucky("boolean"),
         cp_multiplier("decimal"), creation_time_ms("integer"), shiny("boolean"), form_id("integer"),
         costume_id("integer"), gender_id("integer"), alignment_id("integer"), bread_mode_raw("integer"),
-        raw_total_items("integer"), raw_max_items("integer"), capture_elapsed_ms("integer");
+        raw_total_items("integer"), raw_max_items("integer"), capture_elapsed_ms("integer"), raw_poke_ball_quantity("integer");
 
         final String type;
         Field(String type) { this.type = type; }
@@ -40,6 +40,7 @@ final class ResearchObservations {
                 switch (this) {
                     case raw_total_items: return Integer.toString(counts.totalItems);
                     case raw_max_items: return Integer.toString(counts.maxItems);
+                    case raw_poke_ball_quantity: return String.valueOf(counts.pokeBallQuantity);
                     case capture_elapsed_ms: return Integer.toString(counts.elapsed);
                     default: throw new AssertionError();
                 }

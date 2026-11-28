@@ -26,12 +26,19 @@ public final class LocalApiTrainerTest {
         check(!LocalApiTrainer.accept(data, packet(201, "0061", "0041", "")));
         check(LocalApiTrainer.accept(data, packet(200, "0061", "0041", "")));
         check(routes.get(PATH).body.contains("\"xp\":null"));
+        check(routes.get(PATH).body.contains("\"level\":null"));
         now.set(201);
-        check(LocalApiTrainer.accept(data, packet(201, "0061", "0041", "|42|0|1|0|1250|0")));
+        check(!LocalApiTrainer.accept(data, packet(201, "0061", "0041", "|42|0|1|0|1250|0|5|60|80")));
+        check(!LocalApiTrainer.accept(data, packet(201, "0061", "0041", "|42|0|1|0|1250|0|5|20|20")));
+        check(LocalApiTrainer.accept(data, packet(201, "0061", "0041", "|42|0|1|0|1250|0|5|20|60")));
         check(!LocalApiTrainer.accept(data, packet(200, "0061", "0041", "")));
         LocalApiRoutes.Reply old = routes.get(PATH);
         check(old.code == 200 && old.body.contains("\"pokemon_caught\":0") && old.body.contains("1.250"));
         check(old.body.contains("\"coverage\":\"partial\"") && old.body.contains("2023-11-14T22:13:20Z"));
+        check(old.body.contains("\"level\":5") && old.body.contains("\"previous_level_xp_requirement\":20")
+            && old.body.contains("\"next_level_xp_requirement\":60") && old.body.contains("\"level_progress_percent\":55.00"));
+        check(old.body.contains("\"xp_in_level_bracket\":22")
+            && old.body.contains("\"xp_remaining_to_next_threshold\":18"));
         check(routes.get("/api/v1/inventory").code == 501 && routes.get(PATH + "?test=1").code == 400);
         try (LocalApiServer server = LocalApiServer.start(
                 new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), "fixture-token", routes, () -> true)) {
@@ -49,6 +56,14 @@ public final class LocalApiTrainerTest {
             }
             publisher.join();
             check(accepted.get() == 198);
+            now.set(400);
+            check(LocalApiTrainer.accept(data, packet(400, "0061", "0041", "|42|0|1|0|1250|0|5|20|40")));
+            check(routes.get(PATH).body.contains("\"level_progress_percent\":null"));
+            check(routes.get(PATH).body.contains("\"xp_in_level_bracket\":null")
+                && routes.get(PATH).body.contains("\"xp_remaining_to_next_threshold\":null"));
+            now.set(401);
+            check(LocalApiTrainer.accept(data, packet(401, "0061", "0041", "|42|0|1|0|1250|0|5|20|-1")));
+            check(routes.get(PATH).body.contains("\"next_level_xp_requirement\":null"));
             now.set(8_000);
             check(routes.get(PATH).body.contains("RESOURCE_STALE"));
             check(routes.get("/api/v1/status").body.contains("\"freshness\":\"stale\""));

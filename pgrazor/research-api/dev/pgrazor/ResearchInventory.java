@@ -5,11 +5,14 @@ final class ResearchInventory {
     static final class Values {
         final long lease;
         final int totalItems, maxItems, elapsed;
-        Values(long lease, int totalItems, int maxItems, int elapsed) {
+        final Integer pokeBallQuantity;
+
+        Values(long lease, int totalItems, int maxItems, int elapsed, Integer pokeBallQuantity) {
             this.lease = lease;
             this.totalItems = totalItems;
             this.maxItems = maxItems;
             this.elapsed = elapsed;
+            this.pokeBallQuantity = pokeBallQuantity;
         }
     }
 
@@ -27,7 +30,7 @@ final class ResearchInventory {
     boolean accept(String packet) {
         if (slot == null || packet == null || packet.length() > 1160) return false;
         String[] parts = packet.split("\\|", -1);
-        if (parts.length != 6) return false;
+        if (parts.length != 6 && parts.length != 7) return false;
         try {
             long observed = Long.parseLong(parts[0]);
             String owner = LocalApiTrainer.utf16(parts[1], 256);
@@ -35,9 +38,11 @@ final class ResearchInventory {
             int total = Integer.parseInt(parts[3]);
             int max = Integer.parseInt(parts[4]);
             int elapsed = Integer.parseInt(parts[5]);
+            Integer pokeBallQuantity = parts.length == 7 ? Integer.valueOf(parts[6]) : null;
+            if (pokeBallQuantity != null && pokeBallQuantity < 0) return false;
             if (active <= 0 || active != lease || total < 0 || max <= 0 || elapsed < 0 || elapsed >= 8) return false;
             return data.publish(slot, owner, observed, LocalApiData.Coverage.PARTIAL,
-                new Values(active, total, max, elapsed));
+                new Values(active, total, max, elapsed, pokeBallQuantity));
         } catch (IllegalArgumentException rejected) {
             return false;
         }

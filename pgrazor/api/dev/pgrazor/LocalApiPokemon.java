@@ -16,10 +16,14 @@ import java.util.function.Supplier;
 
 final class LocalApiPokemon {
     static final String PATH = "/api/v1/pokemon";
+    static final String EGGS_PATH = "/api/v1/eggs";
     static final int HTTP_SECONDS = 45;
     static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
     private static final int MAX_WAITERS = 2;
     private static final Set<String> FIELDS = new HashSet<>();
+    private static final String[] EGG_KEYS = {"instance_id", "is_egg", "egg_type_id", "required_distance_km", "assignment_present",
+        "raw_start_distance_km", "raw_target_distance_km"};
+    private static final Set<String> EGG_FIELDS = new HashSet<>(Arrays.asList(EGG_KEYS));
     static {
         FIELDS.addAll(Arrays.asList(LocalApiPokemonBag.Row.KEYS));
         FIELDS.addAll(Arrays.asList(LocalApiPokemonNormalization.KEYS));
@@ -37,13 +41,14 @@ final class LocalApiPokemon {
     static final class Request {
         final LocalApiPokemonCapture.Capture capture;
         final String id;
-        final boolean includeEggs;
+        final boolean includeEggs, eggsOnly;
         final Set<String> fields;
         boolean released;
-        Request(LocalApiPokemonCapture.Capture capture, String id, boolean includeEggs, Set<String> fields) {
+        Request(LocalApiPokemonCapture.Capture capture, String id, boolean includeEggs, boolean eggsOnly, Set<String> fields) {
             this.capture = capture;
             this.id = id;
             this.includeEggs = includeEggs;
+            this.eggsOnly = eggsOnly;
             this.fields = fields;
         }
     }
@@ -95,13 +100,15 @@ final class LocalApiPokemon {
     }
 
     static boolean owns(String path) {
-        return path.equals(PATH) || path.startsWith(PATH + "?") || path.startsWith(PATH + "/");
+        return path.equals(PATH) || path.startsWith(PATH + "?") || path.startsWith(PATH + "/")
+            || path.equals(EGGS_PATH) || path.startsWith(EGGS_PATH + "?");
     }
 
     synchronized Start start(String uri) {
         int query = uri.indexOf('?');
         String path = query < 0 ? uri : uri.substring(0, query);
-        String id = path.equals(PATH) ? null : path.substring(PATH.length() + 1);
+        boolean eggsOnly = EGGS_PATH.equals(path);
+        String id = eggsOnly || PATH.equals(path) ? null : path.substring(PATH.length() + 1);
         boolean eggs = true, refresh = false, eggsSeen = false, refreshSeen = false;
         Set<String> fields = null;
         if (id != null) {
@@ -115,13 +122,13 @@ final class LocalApiPokemon {
                 if (!refreshSeen && (part.equals("refresh=true") || part.equals("refresh=false"))) {
                     refreshSeen = true;
                     refresh = part.endsWith("true");
-                } else if (id == null && !eggsSeen && (part.equals("include_eggs=true") || part.equals("include_eggs=false"))) {
+                } else if (!eggsOnly && id == null && !eggsSeen && (part.equals("include_eggs=true") || part.equals("include_eggs=false"))) {
                     eggsSeen = true;
                     eggs = part.endsWith("true");
                 } else if (fields == null && part.startsWith("fields=")) {
                     fields = new HashSet<>();
                     for (String field : part.substring("fields=".length()).split(",", -1))
-                        if (!FIELDS.contains(field) || !fields.add(field)) return invalid();
+                        if (!(eggsOnly ? EGG_FIELDS : FIELDS).contains(field) || !fields.add(field)) return invalid();
                 } else return invalid();
             }
         }
@@ -138,7 +145,7 @@ final class LocalApiPokemon {
         }
         waiters++;
         references.put(value, references.getOrDefault(value, 0) + 1);
-        return new Start(new Request(value, id, eggs, fields), null);
+        return new Start(new Request(value, id, eggs, eggsOnly, fields), null);
     }
 
     private static Start invalid() {
@@ -203,6 +210,20 @@ final class LocalApiPokemon {
             + ",\"classified_egg_rows\":" + value.eggs + ",\"storage_usage\":null,\"storage_capacity\":null"
             + ",\"normalization_version\":" + LocalApiPokemonNormalization.quote(normalization.version)
             + ",\"normalization_game_version\":" + LocalApiPokemonNormalization.quote(normalization.game);
+        if (request.eggsOnly) {
+            StringBuilder eggs = new StringBuilder("[");
+            for (LocalApiPokemonBag.Row row : value.rows) {
+                if (!row.egg) continue;
+                if (eggs.length() > 1) eggs.append(',');
+                StringBuilder fields = new StringBuilder();
+                Object[] values = {LocalApiPokemonBag.Row.quote(row.instanceId), true, row.eggType,
+                    row.requiredDistanceKm, row.assignmentPresent, row.rawStartDistanceKm, row.rawTargetDistanceKm};
+                LocalApiPokemonBag.Row.appendFields(fields, EGG_KEYS, values, request.fields);
+                eggs.append('{').append(fields).append('}');
+            }
+            return encoded(metadata + ",\"coverage_scope\":\"pokemon_bag_egg_membership\",\"eggs\":" + eggs + "],\"incubators\":null}",
+                value.account);
+        }
         if (request.id != null) {
             for (LocalApiPokemonBag.Row row : value.rows) {
                 if (request.id.equals(row.instanceId))
@@ -222,9 +243,13 @@ final class LocalApiPokemon {
         }
         String body = metadata + ",\"include_eggs\":" + request.includeEggs + ",\"pokemon\":" + pokemon + "]"
             + (request.includeEggs ? ",\"eggs\":" + eggs + "]" : "") + "}";
+        return encoded(body, value.account);
+    }
+
+    private static LocalApiRoutes.Reply encoded(String body, String account) {
         byte[] encoded = body.getBytes(StandardCharsets.UTF_8);
         return encoded.length <= MAX_RESPONSE_BYTES
-            ? new LocalApiRoutes.Reply(200, encoded, value.account)
+            ? new LocalApiRoutes.Reply(200, encoded, account)
             : failure(413, "RESOURCE_RESPONSE_LIMIT", "Complete response exceeds the byte limit", false);
     }
 

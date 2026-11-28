@@ -4,6 +4,8 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Supplier;
+import java.time.Instant;
 
 /** Only the preview receives a synthetic status fixture. */
 final class LocalApiRoutes {
@@ -14,27 +16,36 @@ final class LocalApiRoutes {
     };
     private static final Set<String> DEFERRED = new HashSet<>(Arrays.asList(RESOURCES));
     private final LocalApiData data;
+    private final Supplier<LocationState> location;
 
     final LocalApiWebSocket.Feed events;
     final LocalApiPokemon pokemon;
 
-    private LocalApiRoutes(LocalApiData data, LocalApiPokemon pokemon) {
+    private LocalApiRoutes(LocalApiData data, LocalApiPokemon pokemon, Supplier<LocationState> location) {
+        this.location = location;
         this.data = data;
         this.pokemon = pokemon;
         events = data == null ? null : data::eventState;
     }
 
-    static LocalApiRoutes preview() { return new LocalApiRoutes(null, null); }
+    static LocalApiRoutes preview() { return new LocalApiRoutes(null, null, null); }
 
-    static LocalApiRoutes production(LocalApiData data) { return new LocalApiRoutes(data, null); }
+    static LocalApiRoutes production(LocalApiData data) { return new LocalApiRoutes(data, null, null); }
 
     static LocalApiRoutes production(LocalApiData data, LocalApiPokemon pokemon) {
-        return new LocalApiRoutes(data, pokemon);
+        return new LocalApiRoutes(data, pokemon, null);
+    }
+
+    static LocalApiRoutes production(LocalApiData data, LocalApiPokemon pokemon, Supplier<LocationState> location) {
+        return new LocalApiRoutes(data, pokemon, location);
     }
 
     Reply get(String path) {
         if ((PREFIX + "status").equals(path)) return status();
         if (data != null && (PREFIX + "trainer").equals(path)) return trainer();
+        if (location != null && (PREFIX + "location").equals(path)) return location();
+        if (location != null && path.startsWith(PREFIX + "location?"))
+            return error(400, "INVALID_QUERY", "Location does not accept query parameters", false);
         if (data != null && path.startsWith(PREFIX + "trainer?")) {
             return error(400, "INVALID_QUERY", "Trainer does not accept query parameters", false);
         }
@@ -49,6 +60,21 @@ final class LocalApiRoutes {
             return error(501, "RESOURCE_UNSUPPORTED", "Resource is not available in this build", false);
         }
         return new Reply(404, "{\"error\":\"NOT_FOUND\"}");
+    }
+
+    private Reply location() {
+        String session = data.session();
+        if (session == null) return error(503, "RESOURCE_NOT_READY", "Verified account is unavailable", true);
+        LocationState state;
+        try { state = location.get(); }
+        catch (IllegalArgumentException invalid) { state = null; }
+        if (state == null) return error(503, "RESOURCE_UNAVAILABLE", "Configured simulated location is unavailable", true);
+        String body = "{\"api_version\":\"1\",\"coverage\":\"partial\",\"freshness\":\"observed_at_request\","
+            + "\"observed_at\":\"" + Instant.now() + "\",\"data\":{\"source\":\"pgr_motion_engine\",\"configured_simulated\":{\"latitude\":"
+            + state.latitude + ",\"longitude\":" + state.longitude
+            + ",\"override_requested\":" + state.enabled + ",\"configured_speed_kmh\":" + state.speedKmh
+            + ",\"coordinate_semantics\":\"motion_engine_model\"},\"configured_anchor\":null,\"actual_device\":null,\"represented_to_game\":null}}";
+        return new Reply(200, body, session, null);
     }
 
     private Reply trainer() {
@@ -80,11 +106,12 @@ final class LocalApiRoutes {
                 String resource = RESOURCES[index];
                 boolean trainer = resource.equals("trainer");
                 boolean fresh = trainer && snapshot != null && data.fresh(snapshot);
-                boolean collection = pokemon != null && resource.equals("pokemon");
+                boolean collection = pokemon != null && (resource.equals("pokemon") || resource.equals("eggs"));
+                boolean locationSupported = location != null && resource.equals("location");
                 boolean eventStream = resource.equals("events");
-                json.append('"').append(resource).append("\":{\"supported\":").append(trainer || eventStream || collection)
-                    .append(",\"ready\":").append(fresh || eventStream || collection && pokemonReady).append(",\"coverage\":\"")
-                    .append(trainer && snapshot != null ? coverage(snapshot) : collection && pokemonReady ? "complete" : "unknown")
+                json.append('"').append(resource).append("\":{\"supported\":").append(trainer || eventStream || collection || locationSupported)
+                    .append(",\"ready\":").append(fresh || eventStream || collection && pokemonReady || locationSupported && session != null).append(",\"coverage\":\"")
+                    .append(trainer && snapshot != null ? coverage(snapshot) : collection && pokemonReady ? "complete" : locationSupported && session != null ? "partial" : "unknown")
                     .append("\",\"observed_at\":")
                     .append(trainer && snapshot != null ? "\"" + snapshot.observedUtc + "\""
                         : collection && pokemonReady ? "\"" + collectionStatus.observedAt + "\"" : "null");

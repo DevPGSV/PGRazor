@@ -148,6 +148,7 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
   std::unique_lock<std::mutex> guard_lock(stats_mutex,std::try_to_lock);
   if(!guard_lock)return;
   char counters[256]{};
+  char level_fields[96]{};
 #ifdef PGRAZOR_RESEARCH_DISCOVERY
   const uint64_t research = pgr_research_progression_lease(clock_ms());
   char progression[128]{};
@@ -161,19 +162,22 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
    Root stats(call(current,"get_PlayerStats"));
    if(stats&&class_name(stats.get())=="PlayerStatsProto"){
     const auto v=read_stats(stats.get());
-#ifdef PGRAZOR_RESEARCH_DISCOVERY
-    if(research && v.xp>0) {
+    if(v.xp>0) {
      try {
       const auto level=field<int32_t>(stats.get(),"Level","System.Int32");
       const auto previous=field<int64_t>(stats.get(),"PrevLevelExp","System.Int64");
       const auto next=field<int64_t>(stats.get(),"NextLevelExp","System.Int64");
-      if(level>0) std::snprintf(progression,sizeof(progression),"|%llu|%d|%lld|%lld|%lld",
-          static_cast<unsigned long long>(research),level,v.xp,
-          static_cast<long long>(previous>=0 && previous<=v.xp ? previous : -1),
-          static_cast<long long>(next>0 && next>previous ? next : -1));
+      if(level>0) {
+       const auto prev_xp=static_cast<long long>(previous>=0 && previous<=v.xp ? previous : -1);
+       const auto next_xp=static_cast<long long>(next>0 && next>previous ? next : -1);
+       std::snprintf(level_fields,sizeof(level_fields),"|%d|%lld|%lld",level,prev_xp,next_xp);
+#ifdef PGRAZOR_RESEARCH_DISCOVERY
+       if(research) std::snprintf(progression,sizeof(progression),"|%llu|%d|%lld|%lld|%lld",
+           static_cast<unsigned long long>(research),level,v.xp,prev_xp,next_xp);
+#endif
+      }
      } catch (...) { /* The trainer snapshot remains independent. */ }
     }
-#endif
     if(v.xp>0&&v.caught>=0&&v.seen>=0&&v.stops>=0&&v.hatched>=0&&std::isfinite(v.km)&&v.km>=0){
      // Integer millikilometers avoid locale-dependent decimal formatting.
      if(v.km<1e9f)std::snprintf(counters,sizeof(counters),"|%lld|%d|%d|%d|%lld|%d",
@@ -195,6 +199,7 @@ void pgr_local_api_trainer(void *current, const uint16_t *id, uint16_t id_len,
   };
   std::string packet=std::to_string(observed_ms)+"|";
   append_hex(packet,id,id_len);packet.push_back('|');append_hex(packet,name,name_len);packet+=counters;
+  if(counters[0])packet+=level_fields;
   const char kind[]="local-api-trainer";
   PgrRuntimeTransportString args[]={{kind,sizeof(kind)-1},{packet.data(),uint32_t(packet.size())}};
   transport->emit(19,nullptr,0,args,2);
@@ -251,7 +256,7 @@ std::string nickname(void *pokemon) {
  } catch (...) { return "-"; }
 }
 
-int display_enum(void *object,const char *name,const char *type_name) {
+int int_enum(void *object,const char *name,const char *type_name) {
  try {
   void *member=fn<void*(*)(void*,const char*)>(boot.meta.class_get_field_from_name)(klass(object),name);
   require(member && !(fn<int(*)(void*)>(boot.meta.field_get_flags)(member)&0x10),name);
@@ -274,14 +279,36 @@ std::string capture_display(void *pokemon) {
  if (display && typename_of(fn<void*(*)(void*)>(boot.meta.class_get_type)(klass(display.get())))==display_type) {
   const auto value=optional_field<uint8_t>(display.get(),"Shiny","System.Boolean",255);
   if (value<=1) shiny=value;
-  form=display_enum(display.get(),"Form","Holoholo.Rpc.PokemonDisplayProto.Types.Form");
-  costume=display_enum(display.get(),"Costume","Holoholo.Rpc.PokemonDisplayProto.Types.Costume");
-  gender=display_enum(display.get(),"Gender","Holoholo.Rpc.PokemonDisplayProto.Types.Gender");
-  alignment=display_enum(display.get(),"Alignment","Holoholo.Rpc.PokemonDisplayProto.Types.Alignment");
-  bread=display_enum(display.get(),"BreadModeEnum","Holoholo.Proto.Shared.Bread.BreadModeEnum.Types.Modifier");
+  form=int_enum(display.get(),"Form","Holoholo.Rpc.PokemonDisplayProto.Types.Form");
+  costume=int_enum(display.get(),"Costume","Holoholo.Rpc.PokemonDisplayProto.Types.Costume");
+  gender=int_enum(display.get(),"Gender","Holoholo.Rpc.PokemonDisplayProto.Types.Gender");
+  alignment=int_enum(display.get(),"Alignment","Holoholo.Rpc.PokemonDisplayProto.Types.Alignment");
+  bread=int_enum(display.get(),"BreadModeEnum","Holoholo.Proto.Shared.Bread.BreadModeEnum.Types.Modifier");
  }
  return "|"+std::to_string(shiny)+"|"+std::to_string(form)+"|"+std::to_string(costume)
      +"|"+std::to_string(gender)+"|"+std::to_string(alignment)+"|"+std::to_string(bread);
+}
+
+std::string capture_egg_details(void *egg) {
+ const int type=int_enum(egg,"eggType_","Holoholo.Rpc.HoloPokemonEggType");
+ const double start=optional_field<double>(egg,"eggKmWalkedStart_","System.Double",-1.0);
+ const double target=optional_field<double>(egg,"eggKmWalkedTarget_","System.Double",-1.0);
+ const double distance=target-start;
+ // The existing incubation selector accepts a finite target-minus-start distance in (0,100].
+ const double required=start>=0 && std::isfinite(distance) && distance>=0.000001 && distance<=100 ? distance : -1;
+ int assignment=-1;
+ try {
+  Root assigned(field<void*>(egg,"eggIncubatorId_","System.String"));
+  if (!assigned) assignment=0;
+  else {
+   assert_type(assigned.get(),"System.String");
+   const int length=fn<int(*)(void*)>(exp("string_length"))(assigned.get());
+   if (length>=0 && length<=256) assignment=length>0 ? 1 : 0;
+  }
+ } catch (...) {}
+ return "|"+std::to_string(type)+"|"+std::to_string(required)+"|"+std::to_string(assignment)
+     +"|"+std::to_string(std::isfinite(start) && start>=0 ? start : -1)
+     +"|"+std::to_string(std::isfinite(target) && target>=0 ? target : -1);
 }
 
 std::string capture_pokemon(void *pokemon,uint64_t key) {
@@ -305,7 +332,7 @@ std::string capture_pokemon(void *pokemon,uint64_t key) {
  std::string row=std::to_string(key);
  for (int value:values) row+="|"+std::to_string(value);
  return row+"|"+std::to_string(!egg && std::isfinite(multiplier) && multiplier>0 ? multiplier : -1)
-     +"|"+std::to_string(creation>0 ? creation : -1)+"|"+nickname(pokemon)+(egg ? "|-1|-1|-1|-1|-1|-1" : capture_display(pokemon));
+     +"|"+std::to_string(creation>0 ? creation : -1)+"|"+nickname(pokemon)+(egg ? "|-1|-1|-1|-1|-1|-1"+capture_egg_details(pokemon) : capture_display(pokemon));
 }
 
 #ifdef PGRAZOR_RESEARCH_DISCOVERY
@@ -400,11 +427,15 @@ bool pgr_inventory_summary_classes(void **contract,void **implementation) noexce
 }
 
 namespace {
-int32_t inventory_count(const Root &receiver,const char *name) {
- void *getter=method(receiver.get(),name,0);
+int32_t inventory_count(const Root &receiver,const char *name,int32_t *item=nullptr) {
+ void *getter=method(receiver.get(),name,item ? 1 : 0);
  require(!(fn<uint32_t(*)(void*,uint32_t*)>(boot.meta.method_get_flags)(getter,nullptr)&0x10)
       && typename_of(fn<void*(*)(void*)>(boot.meta.method_get_return_type)(getter))=="System.Int32","count method");
- Root boxed(invoke(getter,receiver.get()));
+ void *args[]={item};
+ if (item)
+  require(typename_of(fn<void*(*)(void*,uint32_t)>(boot.meta.method_get_param)(getter,0))==
+          "Holoholo.Rpc.Item","item enum");
+ Root boxed(invoke(getter,receiver.get(),item ? args : nullptr));
  assert_type(boxed.get(),"System.Int32");
  const void *value=fn<void*(*)(void*)>(boot.runtime.object_unbox)(boxed.get());
  require(value,"count value");
@@ -432,6 +463,18 @@ void pgr_inventory_summary_observed(void *bag,void *player,const uint16_t *id,ui
   if (field<void*>(itemBag.get(),"esdo","Niantic.Holoholo.IPlayerService")!=owner.get()) return;
   const auto elapsed=clock_ms()-started;
   if (elapsed>=8 || lease!=pgr_research_progression_lease(clock_ms())) return;
+  // VGP already uses the exact local GetItemCount(Item) path for item ID 1.
+  // Read one scalar with spare time only. This does not identify a stack or prove readiness.
+  int32_t pokeBallQuantity=-1;
+  if (elapsed<4) {
+   try {
+    int32_t pokeBall=1;
+    const auto quantity=inventory_count(itemBag,"GetItemCount",&pokeBall);
+    if (clock_ms()-started<8) pokeBallQuantity=quantity;
+   } catch (...) { /* Keep the independently observed raw counters. */ }
+  }
+  if (field<void*>(itemBag.get(),"esdo","Niantic.Holoholo.IPlayerService")!=owner.get()
+      || lease!=pgr_research_progression_lease(clock_ms())) return;
   const auto *accounts=pgrazor_accounts_api(1);
   const auto *transport=static_cast<const PgrRuntimeTransportApi*>(pgrazor_runtime_transport_api(1));
   pgrazor_account_snapshot_v1_t identity{};
@@ -446,6 +489,7 @@ void pgr_inventory_summary_observed(void *bag,void *player,const uint16_t *id,ui
    for(int shift=12;shift>=0;shift-=4) packet+=digits[(id[i]>>shift)&15];
   packet+="|"+std::to_string(lease)+"|"+std::to_string(totalItems)+"|"+
       std::to_string(maxItems)+"|"+std::to_string(elapsed);
+  if (pokeBallQuantity>=0) packet+="|"+std::to_string(pokeBallQuantity);
   const char event[]="research-inventory-summary";
   const PgrRuntimeTransportString args[]={{event,sizeof(event)-1},{packet.data(),uint32_t(packet.size())}};
   transport->emit(19,nullptr,0,args,2);

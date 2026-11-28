@@ -2,7 +2,6 @@
 """Submit bounded live metadata queries and compare results with an offline catalog."""
 import argparse
 from dataclasses import asdict
-import getpass
 import gzip
 import json
 import re
@@ -79,7 +78,7 @@ def compare(result, catalog, kind):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="http://IPv4:port")
+    parser.add_argument("--base", help="http://IPv4:port")
     parser.add_argument("--catalog", type=Path, help="Full offline types.jsonl.gz")
     parser.add_argument("operation", choices=("support", "assemblies", "search", "type", "status", "cancel", "watch"))
     parser.add_argument("--assembly")
@@ -90,17 +89,15 @@ def main():
     parser.add_argument("--offset", type=int)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--job")
+    parser.add_argument("--token-file", type=Path)
     args = parser.parse_args()
-    token = getpass.getpass("Research bearer token: ")
     try:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
-            raise ValueError("Invalid bearer")
-        client = Client(args.base, token)
+        client = Client.configured(base=args.base, token_file=args.token_file, interactive=True)
         if args.operation == "watch":
             if not args.job:
                 raise ResearchError("Job required")
             for update in client.job_updates([args.job]):
-                print(json.dumps(asdict(update)).replace(token, "[redacted]"), flush=True)
+                print(json.dumps(asdict(update)), flush=True)
             return 0
         if args.operation in ("status", "cancel"):
             if not args.job:
@@ -111,7 +108,7 @@ def main():
             job = asdict(client.observe(DiscoveryQuery(args.operation, **{key: getattr(args, key) for key in keys})))
         if args.catalog and job.get("result") and job["result"].get("availability") == "observed":
             job["comparison"] = compare(job["result"], args.catalog, args.kind or "methods")
-        print(json.dumps(job).replace(token, "[redacted]"))
+        print(json.dumps(job))
         return 0 if job.get("state") not in ("failed", "cancelled") else 1
     except ResearchError as error:
         print(json.dumps({"http_status": error.status, "error": str(error)}))
